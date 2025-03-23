@@ -4,11 +4,13 @@
   "type": "module",
   "version": "0.0.1",
   "scripts": {
+    "version": "bun run bumpp",
     "start": "bun run ./src/cli.ts",
     "compile": "bun build ./src/cli.ts --compile --outfile=dist/java-run"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "bumpp": "^10.1.0"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"
