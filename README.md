@@ -17,6 +17,12 @@
 
 - [-] spring-boot
 
+## Tips
+
+1. 使用本脚本程序之前，确保主机环境存在 `java` 和 `maven` 环境。
+
+2. 确保事先执行过 `mvn compile`，或者可以在使用本脚本程序时，加入 `-c` 传参，详情可以查看 cli 的 `help-log`。
+
 ## Other
 
 To install dependencies:

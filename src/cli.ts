@@ -35,6 +35,8 @@ if (PROFILES_LOCAL_FLAG) {
   PROFILES_ACTIVE = `${LOCAL_FLAG_KEY}-${PROFILES_ACTIVE}`
 }
 
+const MVN_COMPILE_FLAG = !!parseArgvs.booleans(["compile", "-c"])
+
 /** 没有指定 start 参数，只输出帮助信息 */
 const HELP_FLAG = !!parseArgvs.booleans(["help", "-help", "--help", "h", "-h", "--h"]) || !parseArgvs.boolean('start')
 
@@ -86,7 +88,11 @@ async function main() {
   if (HELP_FLAG) {
     return helpLog()
   }
-  
+
+  if (MVN_COMPILE_FLAG) {
+    executeCommand('mvn', ['compile']);
+  }
+
   // 1. 获取模块路径
   const modulesInfos = await getMavenModules(false);
   

@@ -17,6 +17,7 @@ export default () => {
   ${Colors.FgCyan}Options:${Colors.Reset}
     ${Colors.FgYellow}start${Colors.Reset}                  执行脚本程序，不指定时会显示此帮助信息
     ${Colors.FgYellow}not-run, no-run${Colors.Reset}        不运行主程序，仅执行其他操作
+    ${Colors.FgYellow}-c, compile${Colors.Reset}            执行 ${Colors.FgMagenta}mvn compile${Colors.Reset}，使用 mvn 将 java 源码编译为字节码，这是项目运行的前提条件
     ${Colors.FgYellow}-r${Colors.Reset}                     强制刷新项目依赖 class-paths 缓存
     ${Colors.FgYellow}main <class>${Colors.Reset}           指定启动类 (默认: ${Colors.FgMagenta}${defaultConfig.mainClass}${Colors.Reset})
     ${Colors.FgYellow}active <profile>${Colors.Reset}       指定激活的配置文件 (默认: ${Colors.FgMagenta}${defaultConfig.profilesActive}${Colors.Reset})
