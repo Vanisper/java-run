@@ -4,6 +4,7 @@
   "type": "module",
   "version": "0.0.1",
   "scripts": {
+    "start": "bun run ./src/cli.ts",
     "compile": "bun build ./src/cli.ts --compile --outfile=dist/java-run"
   },
   "devDependencies": {
