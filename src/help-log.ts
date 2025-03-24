@@ -8,7 +8,7 @@ export const defaultConfig = {
 export default () => {
   console.log(`
   ${Colors.FgGreen}${'='.repeat(60)}
-  ${Colors.Bright}    Spring Boot 项目快捷启动工具    ${Colors.Reset}
+  ${Colors.Bright}    Spring Boot 项目快捷启动工具    ${Colors.Reset}    By Vanisper
   ${Colors.FgGreen}${'='.repeat(60)}${Colors.Reset}
   
   ${Colors.FgCyan}Usage:${Colors.Reset}
@@ -19,8 +19,8 @@ export default () => {
     ${Colors.FgYellow}not-run, no-run${Colors.Reset}        不运行主程序，仅执行其他操作
     ${Colors.FgYellow}-c, compile${Colors.Reset}            执行 ${Colors.FgMagenta}mvn compile${Colors.Reset}，使用 mvn 将 java 源码编译为字节码，这是项目运行的前提条件
     ${Colors.FgYellow}-r${Colors.Reset}                     强制刷新项目依赖 class-paths 缓存
-    ${Colors.FgYellow}main <class>${Colors.Reset}           指定启动类 (默认: ${Colors.FgMagenta}${defaultConfig.mainClass}${Colors.Reset})
-    ${Colors.FgYellow}active <profile>${Colors.Reset}       指定激活的配置文件 (默认: ${Colors.FgMagenta}${defaultConfig.profilesActive}${Colors.Reset})
+    ${Colors.FgYellow}main=<class>${Colors.Reset}           指定启动类 (默认: ${Colors.FgMagenta}${defaultConfig.mainClass}${Colors.Reset})
+    ${Colors.FgYellow}active=<profile>${Colors.Reset}       指定激活的配置文件 (默认: ${Colors.FgMagenta}${defaultConfig.profilesActive}${Colors.Reset})
     ${Colors.FgYellow}local${Colors.Reset}                  启用本地配置，组合使用时格式为 local-<profile>
                               (示例: ${Colors.FgBlue}active=dev local → 最终生效: local-dev${Colors.Reset})
     ${Colors.FgYellow}-h, --help${Colors.Reset}             显示本帮助信息
