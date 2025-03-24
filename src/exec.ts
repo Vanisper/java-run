@@ -17,7 +17,10 @@ export function executeCommand(command: string, args: string[], options?: Parame
   
   // 检测编码
   const detected = jschardet.detect(result.stdout);
-  const str = iconv.decode(result.stdout, detected.encoding);
+  if (result.stdout.length && detected.encoding) {
+    const str = iconv.decode(result.stdout, detected.encoding);
+    return str.trim();
+  }
 
-  return str.trim();
+  return result.stdout.toString().trim();
 }
