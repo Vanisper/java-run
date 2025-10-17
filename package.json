@@ -2,7 +2,7 @@
   "name": "java-run",
   "module": "cli.ts",
   "type": "module",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "scripts": {
     "version": "bumpp",
     "start": "bun run ./src/cli.ts",
