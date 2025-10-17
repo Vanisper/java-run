@@ -1,4 +1,4 @@
-import { resolve } from 'path';
+import path, { resolve } from 'path';
 import { writeFileSync } from 'fs';
 import getMavenModules from "./find-maven-modules";
 import { buildClasspath } from './classpath-builder';
@@ -112,7 +112,7 @@ async function main() {
   console.log('项目完整依赖数:', fullClasspath.length);
   const classpathFile = resolve(".cache", "classpath.cache");
   
-  const classPathString = fullClasspath.map((item) => `file:/${item.replace(/\\/g, '/')}`).join(' ')
+  const classPathString = fullClasspath.map((item) => `file://${path.normalize(item).replace(/\\/g, '/')}`).join(' ')
   const fullString = `Class-Path: ${classPathString}`;
   const lines: string[] = [];
   let remaining = fullString;
