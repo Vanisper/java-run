@@ -87,7 +87,7 @@ function getDependencyPaths(modulePaths: string[], refresh = false) {
     ], { stdio: 'pipe' });
 
     if (result.status !== 0) {
-      throw new Error(`依赖解析失败: ${absPath}\n${result.stderr}`);
+      throw new Error(`依赖解析失败: ${absPath}\n尝试执行 mvn clean install -U \n${result.stdout?.toString()}`);
     }
 
     // 收集当前模块路径
