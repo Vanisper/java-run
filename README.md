@@ -10,12 +10,22 @@
 
 ## Todo
 
-> 当前此程序服务于一个 jeecg 项目，本质上是 `spring-boot` 的多模块项目。
+> 当前此程序服务于一个 Jeecg 项目，本质上是 Spring Boot 的多模块项目。
 >
-> 是否通用于 `spring-boot` 项目，还待进一步测试。
+> 是否可通用于通用的 Spring Boot 多模块/单模块项目，还需进一步验证。
 >
+当前项目的任务与进展：
 
-- [-] spring-boot
+- [x] 递归解析 Maven pom.xml，识别多模块并提取叶子模块
+- [x] 调用 mvn dependency:build-classpath 构建依赖并做缓存（可用 -r 刷新）
+- [x] 汇总 target/classes 与依赖到 Manifest，生成 cp.jar 并通过 -classpath 运行
+- [x] 支持指定 main=<class>、active=<profile>，以及 local 前缀组合（local-<profile>）
+- [x] 可选执行 mvn compile（-c 或 compile）
+- [x] 跨平台路径分隔符兼容（Windows/Linux/Mac）
+- [ ] 在非 Jeecg 的通用 Spring Boot 项目中验证可用性并完善兼容性
+- [ ] 可配置是否包含测试类路径（includeTests）
+- [ ] 更完善的错误提示、日志与失败恢复策略
+- [ ] 增加单元测试与文档示例，完善 README 使用说明
 
 ## Tips
 
