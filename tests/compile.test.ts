@@ -13,7 +13,7 @@ describe('独立二进制构建', () => {
     const root = resolve('compile-workspace');
     expect(parseCompileOptions([], root)).toEqual({ outfile: join(root, 'dist/java-run') });
     for (const target of [
-      'bun-windows-x64-baseline', 'bun-linux-x64-baseline', 'bun-linux-arm64', 'bun-darwin-arm64', 'bun-darwin-x64',
+      'bun-windows-x64', 'bun-linux-x64', 'bun-linux-arm64', 'bun-darwin-arm64', 'bun-darwin-x64',
     ] as const) {
       expect(parseCompileOptions([`--target=${target}`, '--outfile=dist/custom app=a'], root))
         .toEqual({ target, outfile: join(root, 'dist/custom app=a') });

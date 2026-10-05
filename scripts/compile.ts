@@ -3,8 +3,8 @@ import { resolve } from 'node:path';
 
 const projectRoot = resolve(import.meta.dir, '..');
 const targets = [
-  'bun-windows-x64-baseline',
-  'bun-linux-x64-baseline',
+  'bun-windows-x64',
+  'bun-linux-x64',
   'bun-linux-arm64',
   'bun-darwin-arm64',
   'bun-darwin-x64',

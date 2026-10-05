@@ -12,6 +12,8 @@ on:
       - 'scripts/compile.ts'
       - 'scripts/release.ts'
       - 'scripts/smoke.ts'
+      - 'docs/installation.md'
+      - 'LICENSE*'
       - 'tests/compile.test.ts'
       - 'tests/release.test.ts'
       - 'package.json'
@@ -71,7 +73,8 @@ jobs:
       matrix: ${{ fromJSON(needs.metadata.outputs.matrix) }}
     env:
       GRADLE_USER_HOME: ${{ github.workspace }}/.cache/gradle
-      RELEASE_FILE: ${{ matrix.file }}
+      RELEASE_BINARY: ${{ matrix.binary }}
+      RELEASE_PLATFORM: ${{ matrix.name }}
       BUN_TARGET: ${{ matrix.target }}
     steps:
       - name: 检出待验收提交
@@ -101,29 +104,29 @@ jobs:
       - name: 构建待发布二进制
         shell: bash
         run: |
-          bun run compile --target="$BUN_TARGET" --outfile="dist/$RELEASE_FILE"
+          bun run compile --target="$BUN_TARGET" --outfile="dist/$RELEASE_BINARY"
       - name: JDK 21 完整运行验收
         shell: bash
         env:
           JAVA_RUN_MAVEN_REPOSITORY: ${{ runner.temp }}/java-run-maven-repository
           JAVA_RUN_GRADLE_HOME: ${{ env.GRADLE_USER_HOME }}
-        run: bun scripts/smoke.ts --cli="dist/$RELEASE_FILE" --suite=full
+        run: bun scripts/smoke.ts --cli="dist/$RELEASE_BINARY" --suite=full
       - name: 安装 JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - name: JDK 17 同一产物启动验收
+      - name: 打包与 JDK 17 解压产物验收
         shell: bash
         env:
           JAVA_RUN_MAVEN_REPOSITORY: ${{ runner.temp }}/java-run-maven-repository
           JAVA_RUN_GRADLE_HOME: ${{ env.GRADLE_USER_HOME }}
-        run: bun scripts/smoke.ts --cli="dist/$RELEASE_FILE" --suite=quick
-      - name: 上传已验收文件
+        run: bun scripts/release.ts package "$RELEASE_PLATFORM"
+      - name: 上传已验收压缩包
         uses: actions/upload-artifact@v4
         with:
-          name: binary-${{ matrix.name }}
-          path: dist/${{ matrix.file }}
+          name: package-${{ matrix.name }}
+          path: dist/${{ matrix.archive }}
           if-no-files-found: error
           overwrite: true
 
@@ -139,7 +142,7 @@ jobs:
       - name: 汇总构建产物
         uses: actions/download-artifact@v4
         with:
-          pattern: binary-*
+          pattern: package-*
           merge-multiple: true
           path: dist
       - name: 校验五种产物并生成 SHA-256
@@ -147,6 +150,10 @@ jobs:
       - name: 核对文件校验和
         working-directory: dist
         run: sha256sum --check SHA256SUMS
+      - name: 生成发布说明预览
+        run: |
+          bun scripts/release.ts notes > release-notes.md
+          cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
       - name: 保存已校验产物
         uses: actions/upload-artifact@v4
         with:
@@ -179,6 +186,11 @@ jobs:
       - name: 核对待上传文件
         working-directory: dist
         run: sha256sum --check SHA256SUMS
+      - name: 生成下载与安装说明
+        run: |
+          bun scripts/release.ts notes > release-notes.md
+          gh api --method POST "repos/$GH_REPO/releases/generate-notes" \
+            -f tag_name="$RELEASE_TAG" --jq .body >> release-notes.md
       - name: 创建或恢复未公开草稿
         run: |
           if state=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft); then
@@ -186,9 +198,12 @@ jobs:
               echo '该标签已经公开发布，请使用新版本标签。'
               exit 1
             fi
+            gh release edit "$RELEASE_TAG" --title "java-run $RELEASE_TAG" \
+              --notes-file release-notes.md --prerelease="$RELEASE_PRERELEASE"
           else
-            gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes \
-              --title "$RELEASE_TAG" --prerelease="$RELEASE_PRERELEASE"
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --notes-file release-notes.md --title "java-run $RELEASE_TAG" \
+              --prerelease="$RELEASE_PRERELEASE"
           fi
       - name: 上传完整资产并核对草稿
         run: |

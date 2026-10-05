@@ -104,23 +104,25 @@ docs: 说明参数传递规则
 
 五种产物在对应系统和体系结构的固定原生 runner 上构建：
 
-| 产物 | 编译目标 | 原生 runner |
+| ZIP 资产 | 编译目标 | 原生 runner |
 | --- | --- | --- |
-| Windows x64 baseline | `bun-windows-x64-baseline` | `windows-2025` |
-| Linux x64 baseline | `bun-linux-x64-baseline` | `ubuntu-24.04` |
-| Linux arm64 | `bun-linux-arm64` | `ubuntu-24.04-arm` |
-| macOS arm64 | `bun-darwin-arm64` | `macos-15` |
-| macOS x64 | `bun-darwin-x64` | `macos-15-intel` |
+| `java-run-windows-x64.zip` | `bun-windows-x64` | `windows-2025` |
+| `java-run-linux-x64.zip` | `bun-linux-x64` | `ubuntu-24.04` |
+| `java-run-linux-arm64.zip` | `bun-linux-arm64` | `ubuntu-24.04-arm` |
+| `java-run-darwin-arm64.zip` | `bun-darwin-arm64` | `macos-15` |
+| `java-run-darwin-x64.zip` | `bun-darwin-x64` | `macos-15-intel` |
 
-每个任务使用 `bun run compile` 生成一次待分发的压缩二进制，先在 JDK 21 下执行完整 smoke，再切换到 JDK 17，对同一文件执行 quick 启动验收。验收通过后上传该文件，不重新构建。产物名称保留 x64 的 `baseline` 后缀；平台清单和文件名由 [发布脚本](scripts/release.ts) 统一生成。
+每个任务使用 `bun run compile` 生成一次待分发的压缩二进制，在 JDK 21 下执行完整 smoke。随后将该文件打包，不重新构建：Linux / macOS 使用 `zip`，Windows 使用 PowerShell `Compress-Archive`。实际 ZIP 会在原生环境中解压，核对其中二进制与已验收文件的字节一致，再使用 JDK 17 对解压出的文件执行 quick 启动验收。
 
-汇总步骤要求恰好包含这五种非空普通文件，拒绝缺失、多余或无效产物，然后生成并核对 `SHA256SUMS`。源码 Check 的双 JDK 完整回归与发布文件的 JDK 21 full / JDK 17 quick 范围分别声明，不能将 quick 扩大为完整验收。
+每份 ZIP 包含一个 `java-run-<平台>/` 目录，目录内为固定名称的 `java-run` 或 `java-run.exe`、从 [安装指南](docs/installation.md) 复制的 `INSTALL.md`，以及存在的许可证文件。平台清单、包内目录和公开资产名称由 [发布脚本](scripts/release.ts) 统一生成。公开名称不带版本号，版本由 `/releases/download/v<版本>/` URL 表达；`/releases/latest/download/` 提供最新稳定版的固定下载入口。
+
+汇总步骤要求恰好包含上述五种非空 ZIP，拒绝缺失、多余或无效产物，然后生成并核对覆盖五个 ZIP 的 `SHA256SUMS`。源码 Check 的双 JDK 完整回归与发布文件的 JDK 21 full / JDK 17 quick 范围分别声明，不能将 quick 扩大为完整验收。Linux 验收采用 Ubuntu 24.04 的 glibc 环境，不代表 musl 或其他系统版本已通过验收。
 
 ### 发布流程演练
 
-分支 push 修改发布或检查工作流、编译 / 发布 / smoke 脚本、对应测试、包与版本配置等路径时，会触发五平台构建、原生验收和校验和汇总。完整路径条件以 Release 工作流的 `paths` 为准。分支演练只保存 Actions artifacts，不创建标签或 GitHub Release；日常 Check 独立运行，Release 不重复调用它。
+分支 push 修改发布或检查工作流、编译 / 发布 / smoke 脚本、对应测试、包与版本配置、安装指南等路径时，会触发五平台构建、原生验收、ZIP 解压验收和校验和汇总。完整路径条件以 Release 工作流的 `paths` 为准。分支演练保存 Actions artifacts，并在 Actions summary 展示下载与安装正文预览，不创建标签或 GitHub Release；日常 Check 独立运行，Release 不重复调用它。
 
-`workflow_dispatch` 也是纯演练入口，并额外复用完整 Check。工作流进入默认分支后，可通过 Actions 页面或 GitHub CLI 手动选择分支运行。演练使用所选提交的包版本生成文件名，不代表该版本已经发布。
+`workflow_dispatch` 也是纯演练入口，并额外复用完整 Check。工作流进入默认分支后，可通过 Actions 页面或 GitHub CLI 手动选择分支运行。演练使用所选提交的包版本核对二进制和生成正文，不代表该版本已经发布。
 
 本地可先检查版本和平台清单：
 
@@ -132,7 +134,7 @@ bun scripts/release.ts metadata
 
 任何 `v*` 标签 push 都进入发布校验，不受分支演练的路径条件限制。包版本必须是合法 SemVer，标签必须严格等于 `v<package.json 版本>`，且仓库需包含非空许可证文件。已经公开的标签版本会被拒绝，不能通过重跑覆盖。
 
-元数据校验通过后，同一标签提交的六组 Check 与五平台产物验收并行执行。只有源码检查、产物验收和汇总全部成功，才创建或恢复该标签的未公开草稿，上传五份文件和校验和。公开前还会核对远端资产集合，缺失或额外文件均令流程失败并保留草稿；文件上传与核对全部成功后自动公开。草稿用于承接上传过程和失败重试，不需要额外人工审批。
+元数据校验通过后，同一标签提交的六组 Check 与五平台产物验收并行执行。只有源码检查、产物验收和汇总全部成功，才创建或恢复该标签的未公开草稿，上传五份 ZIP 和校验和。Release 正文自动包含对应版本的下载表、安装说明与 GitHub 生成的变更说明。公开前还会核对远端资产集合，缺失或额外文件均令流程失败并保留草稿；文件上传与核对全部成功后自动公开。草稿用于承接上传过程和失败重试，不需要额外人工审批。
 
 SemVer 包含预发布段的版本自动标记为 prerelease，且不会标记为 latest；稳定版的 latest 选择交给 GitHub 默认规则。同一标签的运行串行执行，不中断正在进行的发布。
 
@@ -150,4 +152,4 @@ gh run rerun <run-id> --failed
 - 为源码接口确定版本号，更新 `package.json` 并核对版本输出
 - 完成待发布提交的检查，审查平台产物和支持边界
 
-`bun run version` 使用 bumpp 调整 `package.json`，不自动提交、创建标签或推送。版本变更通过 PR 合入主分支后，再创建与包版本一致的标签并推送该标签，触发自动发布。发布完成后检查 Release 的标签、产物和校验和，并更新安装说明。
+`bun run version` 使用 bumpp 调整 `package.json`，不自动提交、创建标签或推送。版本变更通过 PR 合入主分支后，再创建与包版本一致的标签并推送该标签，触发自动发布。发布完成后检查 Release 的标签、下载表、ZIP 内容和校验和，并按安装指南核对下载后的版本输出。

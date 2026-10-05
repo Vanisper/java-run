@@ -4,7 +4,27 @@ java-run 为 Maven 和 Gradle 源码工作区提供统一的开发启动入口�
 
 ## 快速开始
 
-从源码使用需要 [Bun](https://bun.sh) **1.4.2**，版本固定在 `.bun-version`；运行 Java 项目还需要符合该项目要求的 JDK，以及 Maven / Gradle 或项目 Wrapper。JDK 的 `java` 和 `jar` 必须可用。
+从 [GitHub Releases](https://github.com/Vanisper/java-run/releases) 下载对应系统和体系结构的 ZIP。预编译版本不需要 Bun；运行 Java 项目仍需要符合该项目要求的 JDK，以及 Maven / Gradle 或项目 Wrapper。JDK 的 `java` 和 `jar` 必须可用。
+
+| 系统与体系结构 | 最新稳定版下载 |
+| --- | --- |
+| Windows x64 | [java-run-windows-x64.zip](https://github.com/Vanisper/java-run/releases/latest/download/java-run-windows-x64.zip) |
+| Linux x64 | [java-run-linux-x64.zip](https://github.com/Vanisper/java-run/releases/latest/download/java-run-linux-x64.zip) |
+| Linux arm64 | [java-run-linux-arm64.zip](https://github.com/Vanisper/java-run/releases/latest/download/java-run-linux-arm64.zip) |
+| macOS arm64（Apple Silicon） | [java-run-darwin-arm64.zip](https://github.com/Vanisper/java-run/releases/latest/download/java-run-darwin-arm64.zip) |
+| macOS x64（Intel） | [java-run-darwin-x64.zip](https://github.com/Vanisper/java-run/releases/latest/download/java-run-darwin-x64.zip) |
+
+macOS / Linux 使用 `uname -m` 查看体系结构：`x86_64` 对应 x64，`arm64` / `aarch64` 对应 arm64。Windows 可在“设置 → 系统 → 关于”查看系统类型，当前提供 x64 版本。Linux 产物在 Ubuntu 24.04 的 glibc 环境验收；musl（如 Alpine）和其他系统版本未纳入发布验收。
+
+按照 [安装指南](docs/installation.md) 核对 SHA-256、解压并将可执行文件加入 PATH；ZIP 内也附有独立的 `INSTALL.md`。随后在 Java 工作区根目录执行：
+
+```sh
+java-run
+```
+
+### 从源码构建
+
+源码构建需要 [Bun](https://bun.sh) **1.4.2**，版本固定在 `.bun-version`。
 
 在 java-run 仓库中安装锁定依赖并编译本机二进制：
 
@@ -14,13 +34,7 @@ bun install --frozen-lockfile
 bun run compile
 ```
 
-产物为 `dist/java-run`，Windows 使用 `dist/java-run.exe`。把产物放到 PATH 后，在 Java 工作区根目录执行：
-
-```sh
-java-run
-```
-
-编译后的二进制不需要安装 Bun，仍需要 JDK 和目标项目的构建工具。源码调试可以直接使用：
+产物为 `dist/java-run`，Windows 使用 `dist/java-run.exe`。将产物放入 PATH 后即可使用上述命令。源码调试可以直接使用：
 
 ```sh
 bun run src/cli.ts --cwd /path/to/java-project
@@ -201,6 +215,7 @@ Windows 上的 Maven 配置根超出系统代码页时，需要 Maven **3.9.2 �
 
 | 文档 | 内容 |
 | --- | --- |
+| [安装指南](docs/installation.md) | 平台选择、下载安装、校验和升级 |
 | [架构设计](docs/architecture.md) | 产品边界、模块职责、构建适配与跨平台运行契约 |
 | [技术路线](docs/roadmap.md) | 已有工程能力、支持缺口和后续工作的验收条件 |
 | [参与开发](CONTRIBUTING.md) | 本地开发、验证、分支协作与发布流程 |
