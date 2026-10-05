@@ -1,148 +1,73 @@
-import path, { resolve } from 'path';
-import { writeFileSync } from 'fs';
-import getMavenModules from "./find-maven-modules";
-import { buildClasspath } from './classpath-builder';
-import { executeCommand } from "./exec";
-import parseArgvs from "./parse-argvs";
-import helpLog, { defaultConfig } from "./help-log";
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parseArgs } from './cli/args';
+import helpLog from './cli/help';
+import { detectBuildTool } from './build-tools/detect';
+import { discoverMavenProjects, needsMavenModule, planMaven, prepareMaven } from './build-tools/maven';
+import { discoverGradleProjects, planGradle, prepareGradle } from './build-tools/gradle';
+import { chooseCandidate, SelectionCancelledError } from './cli/selection';
+import { toProjectConfig } from './cli/config';
+import { createProjectConfigWriter } from './cli/init';
+import { createLaunchCommand, resolveMainClass } from './core/launch';
+import { CommandError, runCommand } from './process/exec';
+import { version } from '../package.json';
 
-parseArgvs.set(Bun.argv);
-
-// ----------- 配置参数 -----------
-/** 不运行主程序，只执行其他操作 */
-const NOT_RUN = !!parseArgvs.booleans(['not-run', 'no-run']);
-/** 是否刷新缓存 */
-const REFRESH_CACHE: boolean = !!parseArgvs.boolean('-r');
-/** 启动类 */
-let TARGET_CLASS = defaultConfig.mainClass
-
-if (parseArgvs.key("main")) {
-  const temp = parseArgvs.key("main")
-  if (temp) TARGET_CLASS = temp
-}
-
-/** 指定配置文件 */
-let PROFILES_ACTIVE = defaultConfig.profilesActive
-if (parseArgvs.key("active")) {
-  const temp = parseArgvs.key("active")
-  if (temp) PROFILES_ACTIVE = temp
-}
-
-const LOCAL_FLAG_KEY = 'local'
-const PROFILES_LOCAL_FLAG = !!parseArgvs.boolean(LOCAL_FLAG_KEY)
-if (PROFILES_LOCAL_FLAG) {
-  PROFILES_ACTIVE = PROFILES_ACTIVE.replace(`${LOCAL_FLAG_KEY}-`, "")
-  PROFILES_ACTIVE = `${LOCAL_FLAG_KEY}-${PROFILES_ACTIVE}`
-}
-
-const MVN_COMPILE_FLAG = !!parseArgvs.booleans(["compile", "-c"])
-
-/** 没有指定 start 参数，只输出帮助信息 */
-const HELP_FLAG = !!parseArgvs.booleans(["help", "-help", "--help", "h", "-h", "--h"]) || !parseArgvs.boolean('start')
-
-// 获取项目版本号
-function getProjectVersion(): string {
-  return executeCommand('mvn', [
-    'help:evaluate',
-    '-Dexpression=project.version',
-    '-q',
-    '-DforceStdout'
-  ]);
-}
-
-function getProjectGroupId(projectName?: string): string {
-  return executeCommand('mvn', [
-    'help:evaluate',
-    '-Dexpression=project.groupId',
-    '-q',
-    '-DforceStdout',
-    ...(projectName ? ['-pl', projectName] : [])
-  ]);
-}
-
-// 构建项目
-function buildProject(): void {
-  console.log('正在构建项目...');
-  executeCommand('mvn', ['clean', 'package']);
-}
-
-// 启动Java应用
-function startApplication(classpath: string, mainClass: string, profile: string): void {
-  const jvmArgs = [
-    `-Dspring.profiles.active=${profile}`,
-    `-Dspring.output.ansi.enabled=always`,
-    `-Dfile.encoding=UTF-8`,
-    '-classpath', classpath,
-    mainClass
-  ];
-
-  console.log('启动应用程序...\n');
-  executeCommand('java', jvmArgs, { 
-    stdio: 'inherit',
-    windowsHide: true
-  });
-}
-
-// 主流程
-async function main() {
-  if (HELP_FLAG) {
-    return helpLog()
+/** 执行一个 CLI 请求，保留 Java 或构建工具的失败退出码 */
+export async function main(argv: string[]): Promise<number> {
+  let workspace: string | undefined;
+  try {
+    const config = parseArgs(argv);
+    if (config.action === 'help') { helpLog(); return 0; }
+    if (config.action === 'version') { console.log(`java-run ${version}`); return 0; }
+    const configWriter = config.action === 'init' ? createProjectConfigWriter(config.cwd, config.force) : undefined;
+    const tool = detectBuildTool(config);
+    if (config.action === 'plan') {
+      const previewWorkspace = join(tmpdir(), '<java-run-workspace>');
+      const plan = tool === 'maven' ? planMaven(config, previewWorkspace) : planGradle(config, previewWorkspace);
+      console.log(JSON.stringify({ ...plan, launch: { java: config.javaCommand || '由工具链解析', main: config.mainClass || '由项目声明或唯一 main 方法确定',
+        jvmArgs: config.jvmArgs, applicationArgs: config.applicationArgs },
+        notes: [...plan.notes, '这是静态预览，未验证有效项目模型、主类和依赖文件'] }, null, 2));
+      return 0;
+    }
+    workspace = mkdtempSync(join(tmpdir(), 'java-run-'));
+    if (!config.module && (config.action === 'init' || process.stdin.isTTY && process.stderr.isTTY)) {
+      const discoverModules = tool === 'gradle' || await needsMavenModule(config);
+      if (discoverModules) {
+        const candidates = tool === 'gradle' ? await discoverGradleProjects(config, workspace)
+          : await discoverMavenProjects(config, workspace);
+        config.module = candidates.length === 1 ? candidates[0]!.value
+          : await chooseCandidate(candidates, '选择启动项目（库模块可能没有 main）');
+        console.error(`java-run：已选择 --module=${config.module}`);
+      }
+    }
+    const project = tool === 'maven' ? await prepareMaven(config, workspace) : await prepareGradle(config, workspace);
+    const selectMainClass = process.stdin.isTTY && process.stderr.isTTY
+      ? (candidates: readonly string[]) => chooseCandidate(candidates.map(value => ({ value, label: value })), '选择启动主类')
+      : undefined;
+    if (configWriter) {
+      const mainClass = await resolveMainClass(config, project, selectMainClass);
+      configWriter.save(toProjectConfig(config, tool, mainClass));
+      console.error(`java-run：已保存 ${configWriter.path}\n在该工作区运行 java-run 即可启动 ${mainClass}（${tool}）`);
+      return 0;
+    }
+    const launch = await createLaunchCommand(config, project, workspace, selectMainClass);
+    console.error(`java-run：运行 ${launch.mainClass}（${tool}）`);
+    return (await runCommand(launch)).exitCode;
+  } catch (error) {
+    if (error instanceof SelectionCancelledError) { console.error('java-run：已取消选择'); return error.exitCode; }
+    if (error instanceof CommandError) {
+      console.error(`java-run：${error.message}\n工作目录：${error.cwd}`);
+      if (error.stdout.trim()) console.error(error.stdout.trim());
+      if (error.stderr.trim()) console.error(error.stderr.trim());
+      if (error.cause instanceof Error) console.error(error.cause.message);
+      return error.exitCode || 1;
+    }
+    console.error(`java-run：${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  } finally {
+    if (workspace) rmSync(workspace, { recursive: true, force: true });
   }
-
-  if (MVN_COMPILE_FLAG) {
-    executeCommand('mvn', ['compile']);
-  }
-
-  // 1. 获取模块路径
-  const modulesInfos = await getMavenModules(false);
-  
-  // 2. 获取项目元数据
-  const version = getProjectVersion();
-  console.log(`项目版本: ${version}`);
-
-  // 3. 构建项目
-  // buildProject();
-
-  // 4. 准备运行环境
-  const fullClasspath = buildClasspath(modulesInfos, {
-    refresh: REFRESH_CACHE,
-    includeTests: false
-  });
-
-  console.log('项目完整依赖数:', fullClasspath.length);
-  const classpathFile = resolve(".cache", "classpath.cache");
-  
-  const classPathString = fullClasspath.map((item) => `file://${path.normalize(item).replace(/\\/g, '/')}`).join(' ')
-  const fullString = `Class-Path: ${classPathString}`;
-  const lines: string[] = [];
-  let remaining = fullString;
-  // 处理首行 (最多72字符)
-  lines.push(remaining.substring(0, 72));
-  remaining = remaining.slice(72);
-  // 处理后续行 (每行71字符 + 前导空格)
-  while (remaining.length > 0) {
-    const line = ` ${remaining.substring(0, 71)}`;
-    lines.push(line);
-    remaining = remaining.slice(71);
-  }
-
-  writeFileSync(classpathFile, [
-    'Manifest-Version: 1.0',
-    ...lines,
-    'Created-By: Generated Tool',
-    '' // 必须的空行
-  ].join('\n'))
-
-  const result = executeCommand('jar', ['-cvfm', '.cache/cp.jar', classpathFile])
-  console.log(result);
-  
-  if (NOT_RUN) return
-  // 5. 启动应用
-  startApplication('.cache/cp.jar', TARGET_CLASS, PROFILES_ACTIVE);
-  console.log('\n🎉 应用正常退出');
 }
 
-main().catch(err => {
-  console.error('运行失败:', err);
-  process.exit(1);
-});
+if (import.meta.main) process.exitCode = await main(Bun.argv.slice(2));

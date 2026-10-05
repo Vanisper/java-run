@@ -1,0 +1,5 @@
+apply plugin: 'application'
+
+application {
+    mainClass = 'org.javarun.fixture.OtherGradleApplication'
+}

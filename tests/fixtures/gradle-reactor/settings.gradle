@@ -1,0 +1,2 @@
+rootProject.name = 'java-run-gradle-fixture'
+include 'lib', 'app', 'other-app'
