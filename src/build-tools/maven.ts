@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { parseStringPromise } from 'xml2js';
 import { CommandError, runCommand } from '../process/exec';
 import { assertJavaArguments } from '../process/java-arguments';
@@ -8,6 +8,8 @@ import type { BuildPlan, CommandSpec, MavenProject, PreparedProject, RunConfig }
 
 const HELP_PLUGIN = 'org.apache.maven.plugins:maven-help-plugin:3.5.1';
 const DEPENDENCY_PLUGIN = 'org.apache.maven.plugins:maven-dependency-plugin:3.8.1';
+const windowsMavenVersions = new Map<string, Promise<void>>();
+const baseDirectoryProperty = '-Dmaven.multiModuleProjectDirectory=${env.JAVA_RUN_MAVEN_BASE_DIRECTORY}';
 
 /** 优先采用项目 Wrapper，存在时不回退到其他 Maven 版本 */
 function resolveMaven(config: RunConfig): string {
@@ -25,7 +27,7 @@ function validateBuildArgs(args: string[]): void {
     if (flags.has(arg)) continue;
     if (arg.startsWith('-D') && arg.length > 2) {
       const name = arg.slice(2).split('=', 1)[0]!;
-      if (!['output', 'outputEncoding', 'expression', 'includeScope', 'excludeScope', 'skipTests', 'maven.test.skip', 'maven.main.skip', 'maven.install.skip'].includes(name)
+      if (!['output', 'outputEncoding', 'expression', 'includeScope', 'excludeScope', 'skipTests', 'maven.test.skip', 'maven.main.skip', 'maven.install.skip', 'maven.multiModuleProjectDirectory'].includes(name)
         && !name.startsWith('mdep.') && !name.startsWith('exec.')) continue;
       throw new Error(`构建属性 ${name} 由 java-run 管理，请使用对应的启动配置`);
     }
@@ -47,6 +49,76 @@ function command(config: RunConfig, goals: string[], stage: string, alsoMake = f
   if (alsoMake && config.module) args.push('-am');
   args.push(...goals);
   return { command: resolveMaven(config), args, cwd: config.cwd, stage };
+}
+
+/**
+ * 将 Maven 配置根转换为相对工作目录的路径
+ *
+ * @description 显式配置优先，否则采用最近的 .mvn 祖先；找不到时采用工作目录，跨盘路径保持绝对形式
+ */
+export function resolveMavenBaseDirectory(cwd: string, configuredBase?: string): string {
+  const directory = resolve(cwd);
+  let base = configuredBase ? resolve(directory, configuredBase) : directory;
+  if (!configuredBase) {
+    while (!existsSync(join(base, '.mvn'))) {
+      const parent = dirname(base);
+      if (parent === base) {
+        base = directory;
+        break;
+      }
+      base = parent;
+    }
+  }
+  return relative(directory, base) || '.';
+}
+
+async function executeMaven(spec: CommandSpec): Promise<void> {
+  let env: NodeJS.ProcessEnv | undefined;
+  let execution = spec;
+  let bridge = false;
+  const java = buildJava();
+  await assertJavaArguments(java, spec.args, spec.cwd);
+  if (process.platform === 'win32') {
+    const configuredKey = Object.keys(process.env).find(name => name.toLowerCase() === 'maven_basedir');
+    const base = resolveMavenBaseDirectory(spec.cwd, configuredKey ? process.env[configuredKey] : undefined);
+    const absoluteBase = resolve(spec.cwd, base);
+    try {
+      await assertJavaArguments(java, [`-Dmaven.multiModuleProjectDirectory=${absoluteBase}`], spec.cwd);
+      env = { MAVEN_BASEDIR: absoluteBase };
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('无法完整表示')) throw error;
+      await assertJavaArguments(java, [`-Dmaven.multiModuleProjectDirectory=${base}`], spec.cwd);
+      // 初始化先用可表示的相对根，Maven CLI 再从 Unicode 子环境还原模型中的绝对根
+      env = { MAVEN_BASEDIR: base, JAVA_RUN_MAVEN_BASE_DIRECTORY: absoluteBase };
+      execution = { ...spec, args: [...spec.args, baseDirectoryProperty] };
+      bridge = true;
+    }
+  }
+  if (bridge) await validateWindowsMavenVersion(spec, env!);
+  console.error(`java-run：${spec.stage}`);
+  const result = await runCommand(execution, { capture: true, env });
+  if (result.exitCode !== 0) throw new CommandError(execution, result);
+}
+
+async function validateWindowsMavenVersion(spec: CommandSpec, env: NodeJS.ProcessEnv): Promise<void> {
+  const key = `${spec.command}\0${spec.cwd}`;
+  let checked = windowsMavenVersions.get(key);
+  if (!checked) {
+    checked = (async () => {
+      const versionCommand = { ...spec, args: ['-B', '-ntp', '-version'], stage: '检测 Windows Maven 兼容性' };
+      const result = await runCommand(versionCommand, { capture: true, env });
+      if (result.exitCode !== 0) throw new CommandError(versionCommand, result);
+      const output = `${result.stdout}\n${result.stderr}`.replace(/\x1b\[[0-9;]*m/g, '');
+      const version = /Apache Maven\s+(\d+)\.(\d+)\.(\d+)/.exec(output);
+      if (!version) throw new Error('无法确认 Maven 版本；Windows 需要 Maven 3.9.2 或更新版本以保留配置根的 Unicode 路径');
+      const [, major, minor, patch] = version.map(Number);
+      if (major! < 3 || (major === 3 && (minor! < 9 || (minor === 9 && patch! < 2)))) {
+        throw new Error(`Windows 需要 Maven 3.9.2 或更新版本以保留配置根语义，实际版本为 ${version[1]}.${version[2]}.${version[3]}`);
+      }
+    })();
+    windowsMavenVersions.set(key, checked);
+  }
+  await checked;
 }
 
 /** 预览 Maven 的单目标准备与解析命令，不执行 Maven */
@@ -114,10 +186,7 @@ export async function prepareMaven(config: RunConfig, workspace: string): Promis
   await validateRoot(config);
   const plan = planMaven(config, workspace);
   for (const spec of plan.commands) {
-    console.error(`java-run：${spec.stage}`);
-    await assertJavaArguments(buildJava(), spec.args, config.cwd);
-    const result = await runCommand(spec, { capture: true });
-    if (result.exitCode !== 0) throw new CommandError(spec, result);
+    await executeMaven(spec);
   }
   const pomFile = readFileSync(join(workspace, 'project-file.txt'), 'utf8').trim();
   if (!isAbsolute(pomFile) || !existsSync(pomFile)) throw new Error('Maven 未返回有效的目标 POM 路径');
@@ -144,10 +213,7 @@ export async function needsMavenModule(config: RunConfig): Promise<boolean> {
 export async function discoverMavenProjects(config: RunConfig, workspace: string): Promise<{ value: string; label: string }[]> {
   const output = join(workspace, 'module-list.xml');
   const spec = command({ ...config, module: undefined }, [`${HELP_PLUGIN}:effective-pom`, `-Doutput=${output}`, '-q'], '读取 Maven 模块候选');
-  console.error(`java-run：${spec.stage}`);
-  await assertJavaArguments(buildJava(), spec.args, config.cwd);
-  const result = await runCommand(spec, { capture: true });
-  if (result.exitCode !== 0) throw new CommandError(spec, result);
+  await executeMaven(spec);
   const document = await parseStringPromise(readFileSync(output, 'utf8'), { explicitArray: false });
   const value = document.projects?.project ?? document.project;
   const projects = Array.isArray(value) ? value : value ? [value] : [];

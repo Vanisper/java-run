@@ -62,6 +62,30 @@ describe('异步执行', () => {
     expect(JSON.parse(result.stdout)).toEqual(args);
   });
 
+  test('子环境覆盖保留未指定变量且不修改父环境', async () => {
+    const pathName = Object.keys(process.env).find(name => name.toLowerCase() === 'path')!;
+    const originalPath = process.env[pathName];
+    const originalValue = process.env.JAVA_RUN_CHILD_OPTION;
+    const value = 'child value 中文 # %';
+    const source = 'console.log(JSON.stringify({value:process.env.JAVA_RUN_CHILD_OPTION,path:process.env[Object.keys(process.env).find(name=>name.toLowerCase()==="path")]}))';
+    const result = await runCommand(command(source), { capture: true, env: { JAVA_RUN_CHILD_OPTION: value } });
+    expect(JSON.parse(result.stdout)).toEqual({ value, path: originalPath });
+    expect({ path: process.env[pathName], value: process.env.JAVA_RUN_CHILD_OPTION })
+      .toEqual({ path: originalPath, value: originalValue });
+  });
+
+  test('undefined 仅从子环境移除变量，Windows 覆盖按名称忽略大小写', async () => {
+    const pathName = Object.keys(process.env).find(name => name.toLowerCase() === 'path')!;
+    const originalPath = process.env[pathName];
+    const overrideName = process.platform === 'win32' ? pathName.toLowerCase() : pathName;
+    const source = 'console.log(JSON.stringify({path:process.env[Object.keys(process.env).find(name=>name.toLowerCase()==="path")]}))';
+    const removed = await runCommand(command(source), { capture: true, env: { [overrideName]: undefined } });
+    expect(JSON.parse(removed.stdout)).toEqual({});
+    const overwritten = await runCommand(command(source), { capture: true, env: { [overrideName]: 'child-only-path' } });
+    expect(JSON.parse(overwritten.stdout)).toEqual({ path: 'child-only-path' });
+    expect({ path: process.env[pathName] }).toEqual({ path: originalPath });
+  });
+
   test('不存在的命令拒绝 Promise 并保留阶段', async () => {
     const spec = { command: path.join(temporaryDirectory(), 'missing-command'), args: [], cwd: process.cwd(), stage: '依赖解析' };
     await expect(runCommand(spec, { capture: true })).rejects.toMatchObject({ name: 'CommandError', exitCode: 127, stage: '依赖解析' });

@@ -64,3 +64,7 @@ macOS 的问题发生在测试源文件名：JDK 17 将文件路径转为 NFC，
 Windows 原生 JDK 将系统代码页无法表示的参数替换为 `?`。修复包括 Gradle 通过临时脚本中的 UTF-8 请求读取目录和模块、使用 ASCII 根代理任务，Java / Jar 使用相对受控路径，以及执行前按真实 JDK 编码检查用户参数。中文 classpath 目录继续保留，无法表示的原始参数以明确错误结束。Maven 有效模型的输出路径统一归一化，依赖元数据输出固定 UTF-8。另增加实际 Windows 批处理进程树清理用例。
 
 修复后本地全量回归 91 项通过、3 项 Windows 专用测试跳过；新增 Maven 编码保护后专项 17 项通过。Gradle 8.14 在 JDK 17、21 下各 21 项验证通过，完整独立二进制 smoke 20 项全部通过。后续原生结果以 [分支 Check 运行](https://github.com/Vanisper/java-run/actions/workflows/check.yaml?query=branch%3Afeat%2Fopen-source-cli) 为准，不将本机结果替代 Windows 验收。
+
+第二轮 Linux、macOS 的 JDK 17 / 21 均通过。Windows 暴露了目录短名与长名的等价性，以及 JDK 17 控制台丢失中文诊断的问题。目录断言改为验证实际文件系统身份；Gradle 的受控错误通过 ASCII 错误码传递，由 CLI 补充中文说明，保留构建工具原始输出和退出码，也不改变项目默认字符集。
+
+复核 Maven 启动脚本时发现，它还会自行向 JVM 注入绝对项目根目录。Windows 的配置根无法由原生编码表示时，子进程使用相对 `MAVEN_BASEDIR` 读取 `.mvn`，再通过 Maven 3.9.2 引入的环境属性插值恢复模型中的绝对根目录；保留显式配置及最近 `.mvn` 祖先的含义，不修改父进程环境。可表示的路径保持绝对形式。完整二进制验收新增 `.mvn/maven.config` 属性经过资源过滤后实际生效的检查，覆盖中文项目目录和祖先目录，并验证模型根目录的绝对路径及配置位置；通常为 21 项，原生命令行编码无法表示 Unicode 的 Windows 环境为 23 项。

@@ -126,11 +126,11 @@ gradle.projectsEvaluated {
     def requestedPath = javaRunRequest.target
     def target = gradle.rootProject.findProject(requestedPath)
     if (target == null) {
-        throw new GradleException("找不到 Gradle 项目：" + requestedPath + "，请用 --module 指定实际项目路径")
+        throw new GradleException("[JAVA_RUN:NO_PROJECT] Project not found; select an existing project with --module")
     }
     def javaExtension = target.extensions.findByType(JavaPluginExtension)
     if (javaExtension == null) {
-        throw new GradleException("选定项目 " + requestedPath + " 没有 Java 插件，请用 --module 指定 Java 应用项目")
+        throw new GradleException("[JAVA_RUN:NO_JAVA_PLUGIN] Selected project has no Java plugin; select a Java project with --module")
     }
     def sourceSets = target.extensions.getByType(SourceSetContainer)
     def includeTests = Boolean.parseBoolean(System.getProperty('javaRun.includeTests'))
@@ -146,7 +146,7 @@ gradle.projectsEvaluated {
             def classes = included.collectMany { it.output.classesDirs.files as List }
                 .findAll { it.isDirectory() }.collect { it.absolutePath }.unique()
             if (classes.isEmpty()) {
-                throw new GradleException("选定项目没有已编译类；请准备产物或使用 --build=auto")
+                throw new GradleException("[JAVA_RUN:NO_CLASSES] No compiled classes; prepare outputs or use --build=auto")
             }
             def runtime = selected.runtimeClasspath.files.findAll { it.exists() || !allOutputs.contains(it) }
                 .collect { it.absolutePath }.unique()
@@ -154,7 +154,7 @@ gradle.projectsEvaluated {
             def launcher = toolchains.launcherFor(javaExtension.toolchain).get()
             def application = target.extensions.findByType(JavaApplication)
             if (application != null && application.mainModule.isPresent()) {
-                throw new GradleException("本版本不支持 JPMS mainModule；请使用项目的原生运行任务")
+                throw new GradleException("[JAVA_RUN:UNSUPPORTED_JPMS] JPMS mainModule is unsupported; use the project's native run task")
             }
             def mainClass = application == null ? null : application.mainClass.orNull
             def jvmArgs = application == null ? [] : application.applicationDefaultJvmArgs.collect { it.toString() }
@@ -189,14 +189,25 @@ function initializationScript(config: RunConfig, workspace: string, discovery = 
   return initScript.replace('@JAVA_RUN_REQUEST@', encoded);
 }
 
-async function executeGradle(spec: CommandSpec): Promise<void> {
+async function executeGradle(spec: CommandSpec, config: RunConfig): Promise<void> {
   const java = process.env.JAVA_HOME
     ? join(process.env.JAVA_HOME, 'bin', process.platform === 'win32' ? 'java.exe' : 'java')
     : 'java';
   await assertJavaArguments(java, spec.args, spec.cwd);
   console.error(`java-run：${spec.stage}`);
   const result = await runCommand(spec, { capture: true });
-  if (result.exitCode !== 0) throw new CommandError(spec, result);
+  if (result.exitCode !== 0) {
+    // JDK 17 的控制台编码可能丢失中文，受控失败只跨进程传递 ASCII 错误码
+    const code = /\[JAVA_RUN:(NO_PROJECT|NO_JAVA_PLUGIN|NO_CLASSES|UNSUPPORTED_JPMS)\]/
+      .exec(result.stderr + result.stdout)?.[1];
+    const diagnostics: Record<string, string> = {
+      NO_PROJECT: `找不到 Gradle 项目：${targetPath(config.module)}，请用 --module 指定实际项目路径`,
+      NO_JAVA_PLUGIN: `选定项目 ${targetPath(config.module)} 没有 Java 插件，请用 --module 指定 Java 应用项目`,
+      NO_CLASSES: '选定项目没有已编译类；请准备产物或使用 --build=auto',
+      UNSUPPORTED_JPMS: '本版本不支持 JPMS mainModule；请使用项目的原生运行任务',
+    };
+    throw new CommandError(spec, result, code ? new Error(diagnostics[code]) : undefined);
+  }
 }
 
 function readProject(output: string): PreparedProject {
@@ -242,7 +253,7 @@ export async function prepareGradle(config: RunConfig, workspace: string): Promi
   writeFileSync(paths.script, initializationScript(config, workspace));
   rmSync(paths.output, { force: true });
   const spec = plan.commands[0]!;
-  await executeGradle(spec);
+  await executeGradle(spec, config);
   return readProject(paths.output);
 }
 
@@ -258,7 +269,7 @@ export async function discoverGradleProjects(config: RunConfig, workspace: strin
   mkdirSync(resolve(workspace), { recursive: true });
   writeFileSync(paths.script, initializationScript(config, workspace, true));
   rmSync(output, { force: true });
-  await executeGradle(spec);
+  await executeGradle(spec, config);
   const candidates: unknown = JSON.parse(readFileSync(output, 'utf8'));
   if (!Array.isArray(candidates) || candidates.some(candidate =>
     !candidate || typeof candidate.value !== 'string' || !candidate.value.startsWith(':') || typeof candidate.label !== 'string')) {

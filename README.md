@@ -171,6 +171,8 @@ java-run 启动独立 Java 进程，不模拟自定义 `JavaExec` / `bootRun` �
 
 Windows 的 Java 原生启动器按系统代码页转换命令行参数。classpath 文件 URL 可以保留中文路径，但主类名、JVM / 应用参数和传给构建工具的参数仍需能被该编码完整表示。java-run 会检测 JDK 的 `native.encoding` 并提前拒绝无法表示的参数，避免它们静默变成 `?`。需要传递任意 Unicode 参数时，应按系统要求启用 UTF-8 区域设置；`-Dfile.encoding=UTF-8` 控制应用文件编码，不能替代这项设置。自定义构建入口自行切换 JDK 时，还需核对其实际使用的工具链。[JDK Windows 启动器说明](https://www.oracle.com/java/technologies/javase/21-0-9-relnotes.html)
 
+Windows 上的 Maven 配置根超出系统代码页时，需要 Maven **3.9.2 或更新版本**。java-run 会检查这一条件，保留 `.mvn` 配置和 POM 中项目根目录属性的绝对路径语义；版本不满足时明确报错。[Maven 3.9.2 命令行属性插值](https://maven.apache.org/docs/3.9.2/release-notes.html)
+
 开发与验证命令：
 
 ```sh

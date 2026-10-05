@@ -13,8 +13,8 @@
 
 `ci` Maven profile 将资源中的 `fixture.maven.profile` 改为 `ci`。Gradle 的 `-PfixtureProfile=ci` 对应资源中的 `fixture.gradle.profile`。Spring profile 通过普通 JVM 系统属性传递，验证构建参数与运行参数的边界。测试作用域中的 `commons-lang3` 与 `src/test/java` 中的标记类分别输出 `test-dependency` 和 `test-class`，默认均应为 `absent`，显式包含测试类路径后均应为 `present`。
 
-`plain` 的 `commons.io.version` 默认是 `2.18.0`。测试在临时副本中将其改为 `2.19.0`，随后读取实际加载依赖的实现版本，验证 POM 修改能够影响下一次启动。传入应用参数 `--exit=7` 则打印结果后返回 7。
+`plain` 的 `commons.io.version` 默认是 `2.18.0`。测试在临时副本中将其改为 `2.19.0`，随后读取实际加载依赖的实现版本，验证 POM 修改能够影响下一次启动。临时 `.mvn/maven.config` 的属性经过资源过滤后输出 `maven-config` 标记，分别验证中文项目目录和祖先目录中的配置生效；同时验证 `${maven.multiModuleProjectDirectory}` 保持绝对路径并指向实际配置根。传入应用参数 `--exit=7` 则打印结果后返回 7。
 
 Gradle 夹具不携带 Wrapper 二进制，CI 固定安装 Gradle `8.14`。本机 smoke 使用 PATH 中的 Gradle，`JAVA_RUN_GRADLE_COMMAND` 可覆盖命令；临时 `GRADLE_USER_HOME` 与个人 Gradle 初始化脚本隔离，`JAVA_RUN_GRADLE_HOME` 可指向专用缓存。
 
-smoke 先读取真实 JDK 的原生命令行编码。中文项目目录在所有系统上保留；JVM / 应用参数可表示时完整验证 Unicode，无法表示时改用可表示的参数完成正常运行，并追加两项二进制拒绝验收，要求明确报错且不泄漏参数。Windows 单字节代码页上的完整验收因此包含 22 项，其余环境通常为 20 项。
+smoke 先读取真实 JDK 的原生命令行编码。中文项目目录在所有系统上保留；JVM / 应用参数可表示时完整验证 Unicode，无法表示时改用可表示的参数完成正常运行，并追加两项二进制拒绝验收，要求明确报错且不泄漏参数。Windows 单字节代码页上的完整验收因此包含 23 项，其余环境通常为 21 项。

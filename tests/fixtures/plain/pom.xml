@@ -10,6 +10,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <commons.io.version>2.18.0</commons.io.version>
     <fixture.maven.profile>base</fixture.maven.profile>
+    <fixture.maven.config>absent</fixture.maven.config>
   </properties>
   <dependencies>
     <dependency>

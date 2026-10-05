@@ -1,6 +1,10 @@
 package org.javarun.fixture;
 
 import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Properties;
 import org.apache.commons.io.IOUtils;
@@ -13,11 +17,15 @@ public final class PlainApplication {
             if (stream == null) {
                 throw new IllegalStateException("fixture.properties missing");
             }
-            properties.load(stream);
+            properties.load(new InputStreamReader(stream, StandardCharsets.UTF_8));
         }
         System.out.println("[fixture] kind=plain");
         System.out.println("[fixture] dependency-version=" + IOUtils.class.getPackage().getImplementationVersion());
         System.out.println("[fixture] maven-profile=" + properties.getProperty("fixture.maven.profile"));
+        System.out.println("[fixture] maven-config=" + properties.getProperty("fixture.maven.config"));
+        Path mavenRoot = Path.of(properties.getProperty("fixture.maven.root"));
+        System.out.println("[fixture] maven-root-absolute=" + mavenRoot.isAbsolute());
+        System.out.println("[fixture] maven-root-config=" + (Files.isRegularFile(mavenRoot.resolve(".mvn/maven.config")) ? "present" : "absent"));
         System.out.println("[fixture] spring-profile=" + System.getProperty("spring.profiles.active", "absent"));
         System.out.println("[fixture] jvm-value=" + System.getProperty("fixture.jvm", "absent"));
         for (String arg : args) {

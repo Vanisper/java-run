@@ -152,6 +152,9 @@ async function main(): Promise<void> {
       });
       projects.set(fixture, destination);
     }
+    const plainMavenConfiguration = path.join(projects.get('plain')!, '.mvn');
+    await mkdir(plainMavenConfiguration);
+    await writeFile(path.join(plainMavenConfiguration, 'maven.config'), '-Dfixture.maven.config=project-root\n');
 
     const check = async (name: string, args: string[], expected: Expectations = {}, cwd = workspace) => {
       const started = Date.now();
@@ -241,7 +244,8 @@ async function main(): Promise<void> {
     if (selected('plain')) {
       const directArguments = ['--main=org.javarun.fixture.PlainApplication'];
       await check('plain', argumentsFor('plain', ...directArguments, '--build-arg=-Pci', ...commonArguments), {
-        stdout: ['[fixture] kind=plain', '[fixture] dependency-version=2.18.0', ...mavenMarkers, ...withoutTests],
+        stdout: ['[fixture] kind=plain', '[fixture] dependency-version=2.18.0', '[fixture] maven-config=project-root',
+          '[fixture] maven-root-absolute=true', '[fixture] maven-root-config=present', ...mavenMarkers, ...withoutTests],
       });
       if (!unicodeArguments) {
         const unsupportedValue = 'token-secret-中文';
@@ -257,6 +261,14 @@ async function main(): Promise<void> {
         }
       }
       if (options.suite === 'full') {
+        await rm(plainMavenConfiguration, { recursive: true });
+        const ancestorConfiguration = path.join(workspace, '.mvn');
+        await mkdir(ancestorConfiguration);
+        await writeFile(path.join(ancestorConfiguration, 'maven.config'), '-Dfixture.maven.config=ancestor-root\n');
+        await check('plain-ancestor-maven-config', argumentsFor('plain', ...directArguments), {
+          stdout: ['[fixture] kind=plain', '[fixture] maven-config=ancestor-root',
+            '[fixture] maven-root-absolute=true', '[fixture] maven-root-config=present'],
+        });
         const configPath = path.join(projects.get('plain')!, '.java-run.json');
         await writeFile(configPath, JSON.stringify({
           mainClass: 'org.javarun.fixture.PlainApplication',

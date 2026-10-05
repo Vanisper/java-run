@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CommandError } from '../src/process/exec';
@@ -32,6 +32,16 @@ function file(root: string, name: string, contents: string | Buffer): void {
   const location = join(root, name);
   mkdirSync(join(location, '..'), { recursive: true });
   writeFileSync(location, contents);
+}
+
+function expectSameDirectory(actual: string, expected: string): void {
+  // Java 与 Bun 可能分别保留长名或 8.3 短名，按目录身份验证目标
+  const actualStat = statSync(actual, { bigint: true });
+  const expectedStat = statSync(expected, { bigint: true });
+  expect(actualStat.isDirectory()).toBe(true);
+  expect(actualStat.ino).not.toBe(0n);
+  expect({ device: actualStat.dev, inode: actualStat.ino })
+    .toEqual({ device: expectedStat.dev, inode: expectedStat.ino });
 }
 
 function reactor(): string {
@@ -108,6 +118,31 @@ describe('Gradle 计划契约', () => {
     file(root, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew', 'not executable');
     await expect(prepareGradle(config(root), join(root, 'metadata'))).rejects.toBeInstanceOf(CommandError);
   });
+
+  test('Wrapper 的 ASCII 错误码恢复中文诊断且保留原始失败', async () => {
+    const root = directory();
+    file(root, 'build.gradle', '');
+    const wrapper = join(root, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew');
+    const output = '[JAVA_RUN:NO_PROJECT] Selected project missing; use --module';
+    writeFileSync(wrapper, process.platform === 'win32'
+      ? `@echo off\r\necho ${output}\r\nexit /b 7\r\n`
+      : `#!/bin/sh\nprintf '%s\\n' '${output}'\nexit 7\n`);
+    if (process.platform !== 'win32') chmodSync(wrapper, 0o755);
+    try {
+      await prepareGradle(config(root, { module: ':服务' }), join(root, 'metadata'));
+      throw new Error('预期 Wrapper 原始失败');
+    } catch (error) {
+      expect(error).toBeInstanceOf(CommandError);
+      const commandError = error as CommandError;
+      expect(commandError.command).toBe(wrapper);
+      expect(commandError.cwd).toBe(root);
+      expect(commandError.exitCode).toBe(7);
+      expect(commandError.stdout.trim()).toBe(output);
+      expect(commandError.stderr).toBe('');
+      expect(commandError.cause).toBeInstanceOf(Error);
+      expect((commandError.cause as Error).message).toContain('找不到 Gradle 项目：:服务');
+    }
+  });
 });
 
 describe.skipIf(!availableGradle)('真实 Gradle 项目', () => {
@@ -123,9 +158,9 @@ describe.skipIf(!availableGradle)('真实 Gradle 项目', () => {
     const candidates = await discoverGradleProjects(config(root, { buildCommand: availableGradle! }), workspace);
     expect(candidates.map(candidate => candidate.value)).toContain(`:${module}`);
     const prepared = await prepareGradle(config(root, options), workspace);
-    expect(prepared.directory).toBe(join(root, module));
+    expectSameDirectory(prepared.directory, join(root, module));
     expect(prepared.classpath.every(value => existsSync(value))).toBe(true);
-    expect(JSON.parse(readFileSync(join(workspace, 'gradle-project.json'), 'utf8')).directory).toBe(join(root, module));
+    expectSameDirectory(JSON.parse(readFileSync(join(workspace, 'gradle-project.json'), 'utf8')).directory, join(root, module));
     expect(existsSync(join(root, 'metadata'))).toBe(false);
     expect(existsSync(join(root, 'other', 'build'))).toBe(false);
   }, 120000);
@@ -159,7 +194,7 @@ public class RunnerConventions implements Plugin<Project> {
       .replace("plugins { id 'application' }", "plugins { id 'application'; id 'runner.java-conventions' }")
       .replace("implementation project(':lib')", "implementation 'fixture:included-lib:1.0'"));
     const prepared = await prepareGradle(config(root, { module: ':app', buildCommand: availableGradle! }), join(root, 'metadata'));
-    expect(prepared.directory).toBe(join(root, 'app'));
+    expectSameDirectory(prepared.directory, join(root, 'app'));
     expect(prepared.classpath.some(value => value.endsWith('included-lib-1.0.jar'))).toBe(true);
     expect(prepared.classpath.every(value => existsSync(value))).toBe(true);
     expect(existsSync(join(root, 'other/build'))).toBe(false);
@@ -199,7 +234,7 @@ public class RunnerConventions implements Plugin<Project> {
     const prepared = await prepareGradle(config(root, { module: ':app', buildCommand: availableGradle! }), join(root, 'metadata'));
     expect(prepared.mainClass).toBe('example.Main');
     expect(prepared.jvmArgs).toEqual(['-Dmessage=hello world', '-Xmx128m']);
-    expect(prepared.directory).toBe(join(root, 'app'));
+    expectSameDirectory(prepared.directory, join(root, 'app'));
     expect(prepared.javaCommand && existsSync(prepared.javaCommand)).toBe(true);
     expect(prepared.classpath.some(value => value.endsWith('lib.jar'))).toBe(true);
     expect(prepared.classpath.some(value => value.endsWith('runtime-marker.jar'))).toBe(true);
@@ -229,8 +264,11 @@ public class RunnerConventions implements Plugin<Project> {
       throw new Error('预期聚合根准备失败');
     } catch (error) {
       expect(error).toBeInstanceOf(CommandError);
-      expect((error as CommandError).stderr + (error as CommandError).stdout).toContain('没有 Java 插件');
-      expect((error as CommandError).stderr + (error as CommandError).stdout).toContain('--module');
+      const commandError = error as CommandError;
+      expect(commandError.cause).toBeInstanceOf(Error);
+      expect((commandError.cause as Error).message).toContain('没有 Java 插件');
+      expect(commandError.stderr + commandError.stdout).toContain('[JAVA_RUN:NO_JAVA_PLUGIN]');
+      expect(commandError.stderr + commandError.stdout).toContain('--module');
     }
   }, 60000);
 
@@ -241,7 +279,11 @@ public class RunnerConventions implements Plugin<Project> {
       throw new Error('预期缺少已编译产物时失败');
     } catch (error) {
       expect(error).toBeInstanceOf(CommandError);
-      expect((error as CommandError).stderr + (error as CommandError).stdout).toContain('没有已编译类');
+      const commandError = error as CommandError;
+      expect(commandError.cause).toBeInstanceOf(Error);
+      expect((commandError.cause as Error).message).toContain('没有已编译类');
+      expect(commandError.stderr + commandError.stdout).toContain('[JAVA_RUN:NO_CLASSES]');
+      expect(commandError.stderr + commandError.stdout).toContain('--build=auto');
       expect(existsSync(join(root, 'app/build/classes/java/main'))).toBe(false);
       expect(existsSync(join(root, 'lib/build/libs/lib.jar'))).toBe(false);
     }

@@ -46,6 +46,8 @@ export class CommandError extends Error {
 
 /** 异步命令的输出捕获和信号转发选项 */
 export interface RunCommandOptions {
+  /** 本次子进程的环境覆盖；未指定的变量继承父环境，undefined 删除变量 */
+  env?: NodeJS.ProcessEnv;
   /** 捕获 stdout 和 stderr；默认直接继承当前终端 */
   capture?: boolean;
   /** 转发 SIGINT、SIGTERM 并在父进程退出时清理子进程；默认启用 */
@@ -73,6 +75,18 @@ function spawnExitCode(error: unknown): number {
 function windowsEnvironmentValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
   const key = Object.keys(env).find(key => key.toLowerCase() === name.toLowerCase());
   return key ? env[key] : undefined;
+}
+
+function childEnvironment(overrides: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const [name, value] of Object.entries(overrides ?? {})) {
+    const names = process.platform === 'win32'
+      ? Object.keys(env).filter(key => key.toLowerCase() === name.toLowerCase())
+      : [name];
+    for (const key of names) delete env[key];
+    if (value !== undefined) env[name] = value;
+  }
+  return env;
 }
 
 function resolveWindowsCommand(command: string, cwd: string, env: NodeJS.ProcessEnv): string {
@@ -150,7 +164,7 @@ export function runCommand(spec: CommandSpec, options: RunCommandOptions = {}): 
     const detached = process.platform !== 'win32';
     let child: ReturnType<typeof spawn>;
     try {
-      const prepared = prepareCommand(spec.command, spec.args, spec.cwd);
+      const prepared = prepareCommand(spec.command, spec.args, spec.cwd, childEnvironment(options.env));
       child = spawn(prepared.command, prepared.args, {
         cwd: spec.cwd,
         env: prepared.env,
