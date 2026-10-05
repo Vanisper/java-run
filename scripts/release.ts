@@ -44,19 +44,32 @@ export function releaseNotes(version: string): string {
   const rows = platforms.map(platform => `| ${platform.label} | [${platform.archive}](${download}/${platform.archive}) |`);
   return `## 下载与安装
 
-下载对应系统与处理器的 ZIP 后解压，无需安装 Bun。本机需要满足 Java 项目要求的 JDK；优先使用项目的 Maven / Gradle Wrapper，没有 Wrapper 时需安装对应构建工具。
+下载对应系统与处理器的 ZIP 后解压，无需安装 Bun。
+
+运行环境：
+
+- 满足 Java 项目要求的 JDK
+- 项目的 Maven / Gradle Wrapper，或本机安装的对应构建工具
 
 | 平台 | 下载 |
 | --- | --- |
 ${rows.join('\n')}
 
-每个 ZIP 包含 \`java-run-<平台>/\` 目录，内含 \`java-run\`（Windows 为 \`java-run.exe\`）、同名 \`.sha256\` 校验文件、\`INSTALL.md\` 和项目许可证。
+每个 ZIP 包含 \`java-run-<平台>/\` 目录。
+目录内提供 \`java-run\`（Windows 为 \`java-run.exe\`）、同名 \`.sha256\` 校验文件、\`INSTALL.md\` 和项目许可证。
 
 [SHA256 校验和](${download}/SHA256SUMS) · [安装指南](${repository}/blob/${encodeURIComponent(tag)}/docs/installation.md)
 
-包外的 \`SHA256SUMS\` 用于校验 ZIP，包内的 \`.sha256\` 文件用于校验解压后的二进制。
+- 包外的 \`SHA256SUMS\` 用于校验 ZIP
+- 包内的 \`.sha256\` 文件用于校验解压后的二进制
 
-解压后在该目录执行 \`./java-run --version\`，Windows PowerShell 执行 \`.\\java-run.exe --version\`，应输出 \`java-run ${version}\`。按安装指南加入 PATH 后，即可在 Java 项目目录使用 \`java-run\`。
+解压后，在该目录检查版本：
+
+- macOS / Linux：\`./java-run --version\`
+- Windows PowerShell：\`.\\java-run.exe --version\`
+
+输出应为 \`java-run ${version}\`。
+按安装指南加入 PATH 后，即可在 Java 项目目录使用 \`java-run\`。
 
 升级时下载新版本的对应 ZIP，校验后用其中的可执行文件替换原文件，再执行 \`java-run --version\` 确认版本。
 `;

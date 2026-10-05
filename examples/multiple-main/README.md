@@ -5,18 +5,20 @@
 - `com.example.HelloApplication`
 - `com.example.ReportApplication`
 
-两个入口分别输出自己的类名和收到的参数，不依赖业务库。运行需要 JDK 17 或更新版本，以及 Maven；从 java-run 源码运行还需要根目录 [README](../../README.md#快速开始) 指定的 Bun。
+两个入口分别输出自己的类名和收到的参数，不依赖业务库。
+运行需要 JDK 17 或更新版本，以及 Maven。
+按 [安装指南](../../docs/installation.md) 将 java-run 加入 PATH 后，在 java-run 仓库根目录执行下面的命令。
 
 ## 在终端选择入口
 
-在 java-run 仓库根目录安装依赖，然后运行示例：
+运行示例并传入两个应用参数：
 
 ```sh
-bun install --frozen-lockfile
-bun run src/cli.ts --cwd examples/multiple-main -- --format=table "hello world"
+java-run --cwd examples/multiple-main -- --format=table "hello world"
 ```
 
-java-run 自动编译项目。在标准输入与标准错误均连接终端时，两个入口会按类名排列为候选：
+java-run 自动编译项目。
+在标准输入与标准错误均连接终端时，两个入口会按类名排列为候选：
 
 ```text
 选择启动主类
@@ -32,23 +34,15 @@ entry=com.example.ReportApplication
 args=[--format=table, hello world]
 ```
 
-`--` 后的参数传给所选入口。`hello world` 是一个参数，终端选择不会改变参数边界。
-
-也可以使用编译后的 java-run 二进制。在 java-run 仓库根目录执行：
-
-```sh
-bun run compile
-./dist/java-run --cwd examples/multiple-main -- --format=table "hello world"
-```
-
-Windows 使用 `./dist/java-run.exe`。把二进制放入 PATH 后，可将上述命令中的 `./dist/java-run` 换为 `java-run`。
+`--` 后的参数传给所选入口。
+`hello world` 是一个参数，终端选择不会改变参数边界。
 
 ## 明确指定入口
 
 脚本、CI 或重定向输入的环境使用 `--main`，无需菜单：
 
 ```sh
-bun run src/cli.ts --cwd examples/multiple-main \
+java-run --cwd examples/multiple-main \
   --main=com.example.HelloApplication -- --name=Alice
 ```
 
@@ -59,13 +53,6 @@ entry=com.example.HelloApplication
 args=[--name=Alice]
 ```
 
-二进制用法相同：
-
-```sh
-./dist/java-run --cwd examples/multiple-main \
-  --main=com.example.ReportApplication -- --format=json
-```
-
 非交互环境既没有保存主类、也没有传入 `--main` 时，java-run 会列出两个候选并要求明确入口，避免等待终端输入。
 
 ## 保存入口与参数
@@ -73,15 +60,42 @@ args=[--name=Alice]
 使用 `init` 将选择结果保存到示例项目的 `.java-run.json`：
 
 ```sh
-bun run src/cli.ts init --cwd examples/multiple-main -- --format=table "hello world"
+java-run init --cwd examples/multiple-main -- --format=table "hello world"
 ```
 
-此命令同样编译项目并显示两个主类。输入 `2` 后保存 `ReportApplication` 和应用参数，此时不运行应用。随后执行：
+此命令同样编译项目并显示两个主类。
+输入 `2` 后保存 `ReportApplication` 和应用参数，此时不运行应用。
+随后执行：
 
 ```sh
+java-run --cwd examples/multiple-main
+```
+
+java-run 直接运行保存的入口，不再显示主类菜单：
+
+```text
+entry=com.example.ReportApplication
+args=[--format=table, hello world]
+```
+
+重复初始化默认保留已有文件并报错。
+需要重新选择时使用 `init --force`，原配置中的入口和参数会被本次选择及选项替换；取消或准备失败时保留原文件。
+
+## 从源码运行示例
+
+使用仓库中 [`.bun-version`](../../.bun-version) 指定的 Bun 版本，在仓库根目录执行：
+
+```sh
+bun install --frozen-lockfile
 bun run src/cli.ts --cwd examples/multiple-main
 ```
 
-java-run 直接运行保存的入口，输出 `entry=com.example.ReportApplication` 和 `args=[--format=table, hello world]`，不再显示主类菜单。编译后二进制也支持同样的 `init` 命令。
+也可以编译后运行：
 
-重复初始化默认保留已有文件并报错。需要重新选择时使用 `init --force`，原配置中的入口和参数会被本次选择及选项替换；取消或准备失败时保留原文件。
+```sh
+bun run compile
+./dist/java-run --cwd examples/multiple-main
+```
+
+其他示例的参数保持相同，只需将 `java-run` 换成 `bun run src/cli.ts` 或 `./dist/java-run`。
+Windows 二进制路径使用 `./dist/java-run.exe`。

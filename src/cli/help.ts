@@ -29,7 +29,7 @@ export function getHelpText(): string {
                          none 不主动构建源码，要求产物已经准备好
   --build-arg=<value>     构建工具参数，可重复；负号开头的值必须用等号
   --include-tests         准备并加入测试输出和测试依赖，不执行测试
-  --java <command>        Java 可执行文件
+  --java <command>        应用启动使用的 Java 可执行文件
   --build-command <cmd>   构建工具可执行文件，默认优先使用项目 Wrapper
   --force                 仅用于 init，忽略已有配置并重新生成
 

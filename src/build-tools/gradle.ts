@@ -259,7 +259,9 @@ export async function prepareGradle(config: RunConfig, workspace: string): Promi
 /**
  * 列出可供交互选择的 Gradle Java 项目
  *
- * @description 只执行项目配置和列表任务，不编译、解析运行依赖或读取主类 Provider；候选仍需准备后确认入口
+ * @description
+ * - 执行项目配置和列表任务，构建逻辑可能需要准备 buildSrc 或 included builds
+ * - 不主动编译候选应用、解析其运行依赖或读取主类 Provider；候选仍需准备后确认入口
  */
 export async function discoverGradleProjects(config: RunConfig, workspace: string): Promise<{ value: string; label: string }[]> {
   const spec = commandSpecification(config, workspace, true);
