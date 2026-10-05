@@ -1,8 +1,8 @@
 # java-run
 
-java-run 是面向源码工作区的 Java 运行器，为 Maven 和 Gradle 提供统一的开发启动入口：选择一个项目，由构建工具准备源码和运行依赖，再启动独立的 Java 进程。普通 `main`、Spring Boot 和其他基于 classpath 的应用使用同一套契约。定位与边界见 [产品设计](docs/product-design.md)。
+java-run 为 Maven 和 Gradle 源码工作区提供统一的开发启动入口：选择一个 Java 项目，由构建工具准备源码和运行依赖，再启动独立的 Java 进程。普通 Java、Spring Boot 和其他基于 classpath 的应用使用同一套运行契约。
 
-**当前文档对应重构分支，尚未发布。** 仓库中的 `0.0.5` 版本号仍是旧版本标识；现有 Release 不代表本分支已经发布。新命令与旧版参数不兼容，迁移方式见下文。
+**发布状态：本文描述的命令契约尚未正式发布，请从源码构建。** `package.json` 中的版本号仍为 `0.0.5`，已发布的 `0.0.5` 使用不同的命令格式，升级方式见[命令兼容性](#命令兼容性)。
 
 ## 快速开始
 
@@ -16,7 +16,7 @@ bun install --frozen-lockfile
 bun run compile
 ```
 
-产物为 `dist/java-run`，Windows 使用 `dist/java-run.exe`。把产物放到 PATH 后，在 Java 项目根目录执行：
+产物为 `dist/java-run`，Windows 使用 `dist/java-run.exe`。把产物放到 PATH 后，在 Java 工作区根目录执行：
 
 ```sh
 java-run
@@ -45,25 +45,31 @@ java-run version
 
 ```sh
 java-run --module :app
-java-run --tool gradle --module :apps:admin-server --main cn.xxb.admin.AdminApplication
+java-run --tool gradle --module :app --main com.example.Application
 java-run plan --module :app
 ```
 
-Maven 接受单个 reactor 选择器，如 `app`、`:artifactId` 或 `groupId:artifactId`；Gradle 接受项目路径，如 `:apps:admin-server`。不接受多个目标、排除选择器或可选选择器。目录同时存在 Maven 与 Gradle 构建文件时，需要通过 `--tool` 明确选择。
+Maven 接受单个 reactor 选择器，如 `app`、`:artifactId` 或 `groupId:artifactId`；Gradle 接受项目路径，如 `:app` 或 `:apps:server`。不接受多个目标、排除选择器或可选选择器。目录同时存在 Maven 与 Gradle 构建文件时，需要通过 `--tool` 明确选择。
 
-在 stdin 和 stderr 都连接终端的情况下，未指定模块时可以发现候选：Maven 聚合项目列出有效 reactor 中的 `jar` 项目，Gradle 列出启用了 Java 插件的项目。一个候选自动采用，多个候选通过数字选择。候选表示可以进一步检查的 Java 项目，可能仍是库模块，不代表已经确认存在入口。选定目标准备完成后，优先使用显式主类或构建声明；没有声明时查找目标输出中的传统 `public static void main(String[])`，唯一入口直接采用，多个入口可交互选择。
+当 stdin 和 stderr 都连接终端时，缺少目标或入口的信息可以通过交互补齐：
 
-候选发现会执行构建工具配置，可能下载插件、Wrapper 分发包或准备 `buildSrc` 等构建逻辑；不会为了列出候选编译每个候选应用，也不解析它们的运行依赖。非交互环境和 CI 不进行选择，遇到目标或主类歧义时需通过 CLI 或 `.java-run.json` 明确指定。交互只补齐目标和入口，不提供参数向导，也不自动写入配置；Ctrl+C 或 EOF 取消返回 130。
+- Maven 聚合项目列出有效 reactor 中的 `jar` 项目，Gradle 列出启用了 Java 插件的项目；一个候选自动采用，多个候选通过数字选择
+- 候选可能是库模块，入口需要在选定目标准备完成后确认
+- 主类优先采用 `--main` / 配置值，其次采用构建声明；没有声明时查找目标输出中的传统 `public static void main(String[])`，唯一入口直接采用，多个入口通过数字选择
+
+候选发现会执行构建工具配置，可能下载插件、Wrapper 分发包或准备 `buildSrc` 等构建逻辑。候选应用的编译和运行依赖解析在选定目标后执行。非交互环境和 CI 遇到目标或主类歧义时，需要通过 CLI 或 `.java-run.json` 明确指定。
+
+交互只选择目标和入口。运行参数通过选项或配置传入，配置由用户保存；Ctrl+C 或 EOF 取消返回 130。
 
 ## 参数放在哪一层
 
 | 层次 | 配置方式 | 示例 | 影响 |
 | --- | --- | --- | --- |
-| 启动目标 | `--cwd`、`--module`、`--main` | `--module=:apps:admin-server` | 决定工作区、选定项目和 Java 入口 |
+| 启动目标 | `--cwd`、`--module`、`--main` | `--module=:app` | 决定工作区、选定项目和 Java 入口 |
 | 构建 | `--tool`、`--build`、`--build-arg` | `--build-arg=-Pdev` | 传给 Maven / Gradle，影响构建模型、依赖和准备步骤 |
 | JVM | `--jvm-arg` | `--jvm-arg=-Xmx1g`、`--jvm-arg=-Dspring.profiles.active=dev` | 传给应用 JVM，影响内存、系统属性和 agents |
 | 应用 | `--arg` 或 `--` 后的参数 | `-- --server.port=8081` | 原样传给 `main(String[])`，由应用解释 |
-| 环境 | 启动 java-run 的 shell 或 CI 环境 | `JAVA_HOME`、`GRADLE_USER_HOME`、应用环境变量 | 构建工具和 Java 子进程继承环境；没有环境变量向导或自动 `.env` 加载 |
+| 环境 | 启动 java-run 的 shell 或 CI 环境 | `JAVA_HOME`、`GRADLE_USER_HOME`、应用环境变量 | 构建工具和 Java 子进程继承环境；`.env` 需由 shell 或其他工具加载 |
 
 Maven `-Pdev` 激活的是 **Maven profile**，与 Spring profile 分属不同层。java-run 没有 Spring 专用参数；Spring profile 使用正常 JVM 属性或应用参数传递。
 
@@ -84,7 +90,7 @@ java-run --module :app \
 
 | 选项 | 默认值或行为 |
 | --- | --- |
-| `--cwd <path>` | 当前目录，相对调用时的工作目录解析 |
+| `--cwd <path>` | 工作区根目录；默认为当前目录，相对调用时的工作目录解析 |
 | `--tool <auto\|maven\|gradle>` | `auto`，根据根目录构建文件选择 |
 | `--module <selector>` | 单个目标；缺失时按根项目和交互条件处理 |
 | `--main <class>` | 构建声明或目标输出中的唯一传统 main |
@@ -100,13 +106,13 @@ java-run --module :app \
 
 ## 保存项目默认值
 
-在传给 `--cwd` 的项目根目录保存 `.java-run.json`。例如，`java-template` 可以使用以下配置，随后只执行 `java-run`：
+在 `--cwd` 指定的工作区根目录保存 `.java-run.json`，随后可以直接执行 `java-run`：
 
 ```json
 {
   "buildTool": "gradle",
-  "module": ":apps:admin-server",
-  "mainClass": "cn.xxb.admin.AdminApplication",
+  "module": ":app",
+  "mainClass": "com.example.Application",
   "jvmArgs": [
     "-Xmx1g",
     "-Dspring.profiles.active=dev"
@@ -117,9 +123,9 @@ java-run --module :app \
 }
 ```
 
-可用字段为 `buildTool`、`module`、`mainClass`、`jvmArgs`、`applicationArgs`、`buildArgs`、`build`、`includeTests`。配置使用严格 JSON，不支持注释、未知字段、环境变量插值或配置继承。三个参数字段必须是字符串数组，`includeTests` 必须是布尔值。
+可用字段为 `buildTool`、`module`、`mainClass`、`jvmArgs`、`applicationArgs`、`buildArgs`、`build`、`includeTests`。配置使用严格 JSON，不支持注释、未知字段、环境变量插值或配置继承。三个参数字段必须是字符串数组，其中的元素不能是空字符串或纯空白字符串；`includeTests` 必须是布尔值。
 
-只读取最终项目根目录中的配置，不向父目录搜索。显式 CLI 标量覆盖文件值，未指定时保留文件值；数组在文件数组之后追加。例如，配置已有 `applicationArgs` 时，`--arg` 不清空原参数。`--cwd`、`--java` 和 `--build-command` 仅通过 CLI 设置。
+只读取该工作区根目录的配置，不向父目录搜索，也不在选定模块后重新读取。显式 CLI 标量覆盖文件值，未指定时保留文件值；数组在文件数组之后追加。例如，配置已有 `applicationArgs` 时，`--arg` 会追加参数。`--cwd`、`--java` 和 `--build-command` 仅通过 CLI 设置。
 
 ## 构建与运行行为
 
@@ -135,23 +141,28 @@ Maven reactor 的 `install` 会更新**本地 Maven 仓库**，不执行 `deploy
 
 `--build=none` 不主动编译源码，但仍执行模型与运行依赖解析，必要时仍会下载依赖；它要求目标和项目依赖已有可用产物，不能代替 `plan`。缺少产物时直接报错。
 
-java-run 不维护独立的 classpath 缓存。每次由 Maven / Gradle 重新裁决，下载和增量计算复用构建工具自身缓存。适配器的元数据、Gradle init script 和运行 classpath Jar 放在系统临时目录，请求结束后清理；目标项目的 `target` / `build` 和构建工具缓存正常保留。classpath 使用正确编码的文件 URL，支持空格、中文、`#`、`%` 等路径字符。
+每次启动的运行类路径由 Maven / Gradle 裁决，下载和增量计算复用构建工具自身缓存。java-run 的请求文件和 classpath Jar 放在系统临时目录，请求结束后清理；目标项目的 `target` / `build` 和构建工具缓存正常保留。classpath 支持空格、中文、`#`、`%` 等路径字符。
 
-构建命令在配置的工作区根目录执行，Java 应用的工作目录为选定项目目录。JVM 参数顺序为默认 `-Dfile.encoding=UTF-8`、构建声明的参数、项目配置数组、CLI 追加参数，因此后续同名系统属性可以覆盖默认值。Java 命令优先采用 `--java`，其次采用构建工具提供的工具链，再使用 `JAVA_HOME` 或 PATH。
+构建命令在配置的工作区根目录执行，Java 应用的工作目录为选定项目目录。JVM 参数顺序为默认 `-Dfile.encoding=UTF-8`、构建声明的参数、项目配置数组、CLI 追加参数，因此后续同名系统属性可以覆盖默认值。
+
+Java 命令优先采用 `--java`，其次采用 Gradle 提供的项目工具链，再使用 `JAVA_HOME` 或 PATH。Maven 应用启动暂不读取 Maven toolchains 配置，需要不同 JDK 时使用 `--java` 显式指定。
 
 ## 与项目原生运行任务的关系
 
 已有 Gradle `application` 的项目可以直接使用 `run`，Spring Boot Gradle 插件提供 `bootRun`。java-run 的价值是提供跨 Maven / Gradle 的统一入口，而项目原生任务本身已经能完成常见开发启动。[Gradle Application Plugin](https://docs.gradle.org/current/userguide/application_plugin.html)、[Spring Boot Gradle 运行说明](https://docs.spring.io/spring-boot/gradle-plugin/running.html)
 
-例如，在 `java-template` 中也可以直接执行：
+例如，Gradle 应用模块可以使用对应的原生任务：
 
 ```sh
-./gradlew :apps:admin-server:bootRun
+./gradlew :app:run
+./gradlew :app:bootRun
 ```
 
 java-run 启动独立 Java 进程，不模拟自定义 `JavaExec` / `bootRun` 的全部副作用，也不会自动搬运任务专用环境变量、agents、附加资源或启动前后逻辑。依赖这些设置的项目应使用原生任务，或把所需运行参数明确配置给 java-run。
 
-## 从旧版迁移
+## 命令兼容性
+
+已发布的 `0.0.5` 使用以下命令格式。使用本文描述的版本时，需要调整调用脚本：
 
 | 旧用法 | 当前用法 |
 | --- | --- |
@@ -163,8 +174,6 @@ java-run 启动独立 Java 进程，不模拟自定义 `JavaExec` / `bootRun` �
 | `no-run` / `not-run` | 查看计划使用 `plan`；没有仅执行准备的旧模式 |
 | `-r` / 刷新旧缓存 | 没有 java-run 独立缓存；构建工具选项通过 `--build-arg` 传递 |
 
-旧版 `.cache` 中的 classpath 文件和 `cp.jar` 不再读取。
-
 ## 支持范围与验证
 
 当前支持 Maven `jar` 项目和启用了 Gradle Java 插件的项目，以及传统 `public static void main(String[])` 的 classpath 启动。主类发现只检查选定项目的已编译输出，不遍历所有依赖 Jar 寻找应用。JPMS、Android、native image、应用守护和热重启、部署不属于当前支持范围。
@@ -173,14 +182,15 @@ Windows 的 Java 原生启动器按系统代码页转换命令行参数。classp
 
 Windows 上的 Maven 配置根超出系统代码页时，需要 Maven **3.9.2 或更新版本**。java-run 会检查这一条件，保留 `.mvn` 配置和 POM 中项目根目录属性的绝对路径语义；版本不满足时明确报错。[Maven 3.9.2 命令行属性插值](https://maven.apache.org/docs/3.9.2/release-notes.html)
 
-开发与验证命令：
+类型检查、快速测试和原生运行验收通过 `bun run check`、`bun run compile`、`bun run smoke` 执行。具体环境要求、CI 和发布流程见[参与开发](CONTRIBUTING.md)。
 
-```sh
-bun run check
-bun run compile
-bun run smoke
-```
+## 项目文档
 
-`check` 执行类型检查和快速测试；`compile` 构建本机独立二进制；`smoke` 使用临时项目副本检验真实 Maven / Gradle 运行，需要 JDK、Maven 和 Gradle，也可能下载依赖。测试和本机验证记录见 [实施计划](docs/implementation-plan.md)，夹具说明见 [tests/fixtures/README.md](tests/fixtures/README.md)，参与开发见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+| 文档 | 内容 |
+| --- | --- |
+| [架构设计](docs/architecture.md) | 产品边界、模块职责、构建适配与跨平台运行契约 |
+| [技术路线](docs/roadmap.md) | 已有工程能力、支持缺口和后续工作的验收条件 |
+| [参与开发](CONTRIBUTING.md) | 本地开发、验证、分支协作与发布流程 |
+| [验收夹具](tests/fixtures/README.md) | 真实项目场景、隔离方式和验证覆盖 |
 
-开源许可证尚未确定，正式发布前需要补齐许可证与发布检查。本轮重构不创建版本 tag 或发布新版本。
+仓库尚未确定开源许可证，正式发布前需要补齐许可证与发布条件。
