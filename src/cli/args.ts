@@ -1,106 +1,15 @@
-import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { isJavaClassName } from '../core/java-class';
 import type { RunConfig } from '../core/types';
+import { buildStrategy, buildTool, mainClass, moduleSelector, readProjectConfig } from './config';
 
-type ProjectConfig = Partial<Pick<RunConfig,
-  'buildTool' | 'module' | 'mainClass' | 'jvmArgs' | 'applicationArgs'
-  | 'buildArgs' | 'build' | 'includeTests'
->>;
-
-const CONFIG_KEYS = new Set([
-  'buildTool', 'module', 'mainClass', 'jvmArgs', 'applicationArgs',
-  'buildArgs', 'build', 'includeTests',
-]);
+/** CLI 解析结果，包含不写入项目配置的覆盖确认开关 */
+export interface CliConfig extends RunConfig {
+  force: boolean;
+}
 
 function requireValue(value: unknown, option: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${option} 必须是非空字符串`);
   return value;
-}
-
-function moduleSelector(value: unknown, option: string): string {
-  const selector = requireValue(value, option).trim();
-  if (selector.includes(',') || /^[!\-?]/.test(selector)) {
-    throw new Error(`${option} 必须指定单个模块，不能多选、排除或使用可选选择器`);
-  }
-  return selector;
-}
-
-function mainClass(value: unknown, option: string): string {
-  const name = requireValue(value, option);
-  if (!isJavaClassName(name)) throw new Error(`${option} 必须是有效的 Java 类全名`);
-  return name;
-}
-
-function buildTool(value: unknown, option: string): RunConfig['buildTool'] {
-  if (value !== 'auto' && value !== 'maven' && value !== 'gradle') {
-    throw new Error(`${option} 仅支持 auto、maven 或 gradle`);
-  }
-  return value;
-}
-
-function buildStrategy(value: unknown, option: string): RunConfig['build'] {
-  if (value !== 'auto' && value !== 'none') throw new Error(`${option} 仅支持 auto 或 none`);
-  return value;
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function stringArray(value: unknown, field: string): string[] {
-  if (!Array.isArray(value)) throw new Error(`${field} 必须是字符串数组`);
-  return value.map(item => requireValue(item, field));
-}
-
-function readProjectConfig(cwd: string): ProjectConfig {
-  const path = resolve(cwd, '.java-run.json');
-  let source: string;
-  try {
-    source = readFileSync(path, 'utf8');
-  } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return {};
-    throw new Error(`无法读取配置 ${path}：${error instanceof Error ? error.message : String(error)}`);
-  }
-
-  try {
-    const data: unknown = JSON.parse(source);
-    if (!isObject(data)) throw new Error('配置必须是 JSON 对象');
-    const result: ProjectConfig = {};
-    for (const [field, value] of Object.entries(data)) {
-      if (!CONFIG_KEYS.has(field)) throw new Error(`未知配置项：${field}`);
-      switch (field) {
-        case 'buildTool':
-          result.buildTool = buildTool(value, field);
-          break;
-        case 'module':
-          result.module = moduleSelector(value, field);
-          break;
-        case 'mainClass':
-          result.mainClass = mainClass(value, field);
-          break;
-        case 'jvmArgs':
-          result.jvmArgs = stringArray(value, field);
-          break;
-        case 'applicationArgs':
-          result.applicationArgs = stringArray(value, field);
-          break;
-        case 'buildArgs':
-          result.buildArgs = stringArray(value, field);
-          break;
-        case 'build':
-          result.build = buildStrategy(value, field);
-          break;
-        case 'includeTests':
-          if (typeof value !== 'boolean') throw new Error('includeTests 必须是布尔值');
-          result.includeTests = value;
-          break;
-      }
-    }
-    return result;
-  } catch (error) {
-    throw new Error(`配置无效 ${path}：${error instanceof Error ? error.message : String(error)}`);
-  }
 }
 
 /**
@@ -108,14 +17,15 @@ function readProjectConfig(cwd: string): ProjectConfig {
  *
  * @description
  * - argv 不包含运行时和脚本路径，通常由 process.argv.slice(2) 提供
- * - 默认执行 run；help 和 version 只解析参数，不读取项目配置
+ * - 默认执行 run；init、help 和 version 只解析参数，不读取项目配置
  * - CLI 标量覆盖配置，数组在配置之后追加，-- 后的参数全部传给应用
  * - --cwd 相对 cwd 解析，只读取最终目录中的配置，不向父目录查找
  * - 未知选项、重复标量、无效值或配置抛出 Error，不执行外部命令
  */
-export function parseArgs(argv: string[], cwd = process.cwd()): RunConfig {
-  const config: RunConfig = {
+export function parseArgs(argv: string[], cwd = process.cwd()): CliConfig {
+  const config: CliConfig = {
     action: 'run',
+    force: false,
     cwd: resolve(cwd),
     buildTool: 'auto',
     jvmArgs: [],
@@ -164,6 +74,7 @@ export function parseArgs(argv: string[], cwd = process.cwd()): RunConfig {
     }
 
     switch (key) {
+      case 'init':
       case 'run':
       case 'plan':
       case 'help':
@@ -210,6 +121,11 @@ export function parseArgs(argv: string[], cwd = process.cwd()): RunConfig {
         once(key);
         config.includeTests = true;
         break;
+      case '--force':
+        flag();
+        once(key);
+        config.force = true;
+        break;
       case '--java':
         config.javaCommand = scalar();
         break;
@@ -221,13 +137,14 @@ export function parseArgs(argv: string[], cwd = process.cwd()): RunConfig {
     }
   }
 
+  if (config.force && config.action !== 'init') throw new Error('--force 仅允许用于 init 命令');
   if (requestedCwd !== undefined) config.cwd = resolve(cwd, requestedCwd);
   if (hasHelp) config.action = 'help';
   else if (hasVersion) config.action = 'version';
-  if (config.action === 'help' || config.action === 'version') return config;
+  if (config.action === 'init' || config.action === 'help' || config.action === 'version') return config;
 
   const projectConfig = readProjectConfig(config.cwd);
-  const result: RunConfig = { ...config, ...projectConfig };
+  const result: CliConfig = { ...config, ...projectConfig };
   // 只用显式 CLI 选项覆盖文件配置，避免默认值遮盖用户保存的设置
   const scalarFields = [
     ['--tool', 'buildTool'], ['--module', 'module'], ['--main', 'mainClass'],

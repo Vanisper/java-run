@@ -46,12 +46,13 @@ bun run src/cli.ts --cwd /path/to/java-project
 
 ```sh
 java-run [run] [选项] [-- 应用参数...]
+java-run init [选项] [-- 应用参数...]
 java-run plan [选项]
 java-run help
 java-run version
 ```
 
-`run` 是默认命令。`plan` 读取本地配置并预览步骤，不调用构建工具、不生成项目缓存、不发起交互；其中主类、有效项目模型和运行类路径仍未验证。`help` / `--help` / `-h` 和 `version` / `--version` 不读取项目配置。
+`run` 是默认命令。`init` 准备并选择启动目标，将结果保存为项目配置，随后执行 `java-run` 即可复用。`plan` 读取本地配置并预览步骤，不调用构建工具、不生成项目缓存、不发起交互；其中主类、有效项目模型和运行类路径仍未验证。`help` / `--help` / `-h` 和 `version` / `--version` 不读取项目配置。
 
 多模块仓库中的聚合项目、库模块和应用模块各有职责，并非每个模块都能执行。用 `--module` 选择一个目标，用 `--main` 在需要时指定入口：
 
@@ -71,7 +72,7 @@ Maven 接受单个 reactor 选择器，如 `app`、`:artifactId` 或 `groupId:ar
 
 候选发现会执行构建工具配置，可能下载插件、Wrapper 分发包或准备 `buildSrc` 等构建逻辑。候选应用的编译和运行依赖解析在选定目标后执行。非交互环境和 CI 遇到目标或主类歧义时，需要通过 CLI 或 `.java-run.json` 明确指定。
 
-交互只选择目标和入口。运行参数通过选项或配置传入，配置由用户保存；Ctrl+C 或 EOF 取消返回 130。
+交互只选择目标和入口，运行参数通过选项或配置传入。普通运行中的选择仅用于本次启动；需要保存时使用 `init`。Ctrl+C 或 EOF 取消返回 130。
 
 ### 多入口选择示例
 
@@ -142,12 +143,33 @@ java-run --module :app \
 | `--include-tests` | 准备并加入测试输出和依赖，默认关闭 |
 | `--java <command>` | 显式覆盖 Java 可执行文件 |
 | `--build-command <command>` | 显式覆盖构建工具可执行文件 |
+| `--force` | 仅用于 `init`，忽略已有配置并重新生成 |
 
 未识别的选项、重复标量和无效值均报错。
 
 ## 保存项目默认值
 
-在 `--cwd` 指定的工作区根目录保存 `.java-run.json`，随后可以直接执行 `java-run`：
+在 Java 工作区中执行 `init`，准备项目并选择要保存的模块和主类：
+
+```sh
+java-run init
+java-run
+```
+
+`init` 在 `--cwd` 指定的工作区根目录生成 `.java-run.json`。它复用运行时的构建工具检测、模块选择、产物准备和入口确定流程，但不启动应用。准备可能编译源码、下载依赖、更新构建工具缓存或执行项目构建配置；Maven reactor 的自动准备仍会写入本地 Maven 仓库。只有一个候选时自动采用，多个模块或入口在终端中通过数字选择；非交互环境存在歧义时，使用 `--module` / `--main` 明确指定。
+
+运行参数通过同一组选项一起保存，无需逐项回答参数问题。例如，初始化 Maven 工作区中的 `app` 模块并保存内存和应用参数：
+
+```sh
+java-run init --module app --jvm-arg=-Xmx1g -- --server.port=8081
+java-run
+```
+
+生成的配置记录实际使用的构建工具、选定模块和主类、本次显式提供的三类参数，以及非默认的 `--build` / `--include-tests` 设置。`--cwd`、`--java` 和 `--build-command` 只用于本次定位或准备，不保存到配置。
+
+已有 `.java-run.json` 时，`init` 在运行构建工具前报错并保留原文件。需要重新配置时使用 `java-run init --force`；它忽略旧配置、按本次选项重新生成，因此也可替换格式损坏的配置。取消或准备失败时不写入配置。
+
+配置也可以直接编辑。例如：
 
 ```json
 {
@@ -164,7 +186,7 @@ java-run --module :app \
 }
 ```
 
-可用字段为 `buildTool`、`module`、`mainClass`、`jvmArgs`、`applicationArgs`、`buildArgs`、`build`、`includeTests`。配置使用严格 JSON，不支持注释、未知字段、环境变量插值或配置继承。三个参数字段必须是字符串数组，其中的元素不能是空字符串或纯空白字符串；`includeTests` 必须是布尔值。
+可用字段为 `buildTool`、`module`、`mainClass`、`jvmArgs`、`applicationArgs`、`buildArgs`、`build`、`includeTests`。配置使用严格 JSON，不支持注释、未知字段、环境变量插值或配置继承。三个参数字段必须是字符串数组；`jvmArgs` 和 `buildArgs` 的元素不能是空字符串或纯空白字符串，`applicationArgs` 原样保留空字符串和空白参数，与 `--` 透传一致。`includeTests` 必须是布尔值。
 
 只读取该工作区根目录的配置，不向父目录搜索，也不在选定模块后重新读取。显式 CLI 标量覆盖文件值，未指定时保留文件值；数组在文件数组之后追加。例如，配置已有 `applicationArgs` 时，`--arg` 会追加参数。`--cwd`、`--java` 和 `--build-command` 仅通过 CLI 设置。
 

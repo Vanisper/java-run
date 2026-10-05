@@ -1,6 +1,6 @@
 /** 从源码工作区运行 Java 应用的配置 */
 export interface RunConfig {
-  action: 'help' | 'version' | 'run' | 'plan';
+  action: 'help' | 'version' | 'run' | 'plan' | 'init';
   cwd: string;
   buildTool: 'auto' | 'maven' | 'gradle';
   /** Maven reactor 选择器或 Gradle 项目路径，只能选择一个项目 */

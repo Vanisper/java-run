@@ -264,6 +264,29 @@ async function main(): Promise<void> {
           });
         }
       }
+      const configPath = path.join(projects.get('plain')!, '.java-run.json');
+      const initArguments = argumentsFor('plain', '--build=none', `--jvm-arg=-Dfixture.jvm=${configValue}`, '--arg=--from-config');
+      initArguments[0] = 'init';
+      await check('plain-init', initArguments, { stderr: ['已保存'], absent: ['[fixture]'] });
+      const initialized = JSON.parse(await readFile(configPath, 'utf8'));
+      if (initialized.buildTool !== 'maven' || initialized.mainClass !== 'org.javarun.fixture.PlainApplication'
+        || initialized.build !== 'none' || JSON.stringify(initialized.buildArgs) !== JSON.stringify(mavenBuildArguments)
+        || JSON.stringify(initialized.jvmArgs) !== JSON.stringify([`-Dfixture.jvm=${configValue}`])
+        || JSON.stringify(initialized.applicationArgs) !== JSON.stringify(['--from-config'])) {
+        throw new Error('Maven init 未正确保存入口和参数');
+      }
+      await check('project-config-default', [], {
+        stdout: ['[fixture] kind=plain', `[fixture] jvm-value=${configValue}`, '[fixture] arg=--from-config'],
+      }, projects.get('plain')!);
+      await check('init-existing-config', ['init', `--cwd=${projects.get('plain')!}`, `--build-command=${path.join(workspace, 'missing-build-tool')}`], {
+        code: 1, stderr: ['配置已存在', 'init --force'], absent: ['[fixture]'],
+      });
+      if (options.suite === 'full') {
+        await check('project-config-override', ['--main=org.javarun.fixture.PlainApplication', '--jvm-arg=-Dfixture.jvm=cli value', '--arg=--from-cli'], {
+          stdout: ['[fixture] jvm-value=cli value', '[fixture] arg=--from-config', '[fixture] arg=--from-cli'],
+        }, projects.get('plain')!);
+      }
+      await rm(configPath);
       if (options.suite === 'full') {
         await rm(plainMavenConfiguration, { recursive: true });
         const ancestorConfiguration = path.join(workspace, '.mvn');
@@ -273,21 +296,6 @@ async function main(): Promise<void> {
           stdout: ['[fixture] kind=plain', '[fixture] maven-config=ancestor-root',
             '[fixture] maven-root-absolute=true', '[fixture] maven-root-config=present'],
         });
-        const configPath = path.join(projects.get('plain')!, '.java-run.json');
-        await writeFile(configPath, JSON.stringify({
-          mainClass: 'org.javarun.fixture.PlainApplication',
-          build: 'none',
-          buildArgs: mavenBuildArguments,
-          jvmArgs: [`-Dfixture.jvm=${configValue}`],
-          applicationArgs: ['--from-config'],
-        }, null, 2));
-        await check('project-config-default', [], {
-          stdout: ['[fixture] kind=plain', `[fixture] jvm-value=${configValue}`, '[fixture] arg=--from-config'],
-        }, projects.get('plain')!);
-        await check('project-config-override', ['--main=org.javarun.fixture.PlainApplication', '--jvm-arg=-Dfixture.jvm=cli value', '--arg=--from-cli'], {
-          stdout: ['[fixture] jvm-value=cli value', '[fixture] arg=--from-config', '[fixture] arg=--from-cli'],
-        }, projects.get('plain')!);
-        await rm(configPath);
         await check('plain-tests', argumentsFor('plain', ...directArguments, '--include-tests'), {
           stdout: ['[fixture] kind=plain', ...withTests],
         });
@@ -314,6 +322,21 @@ async function main(): Promise<void> {
       if (await exists(path.join(projects.get('gradle-reactor')!, 'other-app', 'build'))) {
         throw new Error('Gradle auto 准备构建了无关的 other-app');
       }
+      const configPath = path.join(projects.get('gradle-reactor')!, '.java-run.json');
+      const initArguments = argumentsFor('gradle-reactor', '--module=:app', '--build=none', '--arg=--from-config');
+      initArguments[0] = 'init';
+      await check('gradle-init', initArguments, { stderr: ['已保存'], absent: ['[fixture]', 'FORBIDDEN_OTHER_APP'] });
+      const initialized = JSON.parse(await readFile(configPath, 'utf8'));
+      if (initialized.buildTool !== 'gradle' || initialized.module !== ':app'
+        || initialized.mainClass !== 'org.javarun.fixture.GradleApplication' || initialized.build !== 'none'
+        || JSON.stringify(initialized.applicationArgs) !== JSON.stringify(['--from-config'])
+        || 'buildCommand' in initialized) {
+        throw new Error('Gradle init 未正确保存入口和参数');
+      }
+      await check('gradle-config-default', [`--build-command=${process.env.JAVA_RUN_GRADLE_COMMAND ?? 'gradle'}`], {
+        stdout: ['[fixture] kind=gradle-reactor-app', '[fixture] arg=--from-config'], absent: ['FORBIDDEN_OTHER_APP'],
+      }, projects.get('gradle-reactor')!);
+      await rm(configPath);
       if (options.suite === 'full') {
         await check('gradle-reactor-tests', argumentsFor('gradle-reactor', '--module=:app', '--include-tests'), {
           stdout: ['[fixture] kind=gradle-reactor-app', ...withTests],

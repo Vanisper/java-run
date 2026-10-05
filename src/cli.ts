@@ -7,7 +7,9 @@ import { detectBuildTool } from './build-tools/detect';
 import { discoverMavenProjects, needsMavenModule, planMaven, prepareMaven } from './build-tools/maven';
 import { discoverGradleProjects, planGradle, prepareGradle } from './build-tools/gradle';
 import { chooseCandidate, SelectionCancelledError } from './cli/selection';
-import { createLaunchCommand } from './core/launch';
+import { toProjectConfig } from './cli/config';
+import { createProjectConfigWriter } from './cli/init';
+import { createLaunchCommand, resolveMainClass } from './core/launch';
 import { CommandError, runCommand } from './process/exec';
 import { version } from '../package.json';
 
@@ -18,29 +20,37 @@ export async function main(argv: string[]): Promise<number> {
     const config = parseArgs(argv);
     if (config.action === 'help') { helpLog(); return 0; }
     if (config.action === 'version') { console.log(`java-run ${version}`); return 0; }
+    const configWriter = config.action === 'init' ? createProjectConfigWriter(config.cwd, config.force) : undefined;
     const tool = detectBuildTool(config);
-    const previewWorkspace = join(tmpdir(), '<java-run-workspace>');
-    const plan = tool === 'maven' ? planMaven(config, previewWorkspace) : planGradle(config, previewWorkspace);
     if (config.action === 'plan') {
+      const previewWorkspace = join(tmpdir(), '<java-run-workspace>');
+      const plan = tool === 'maven' ? planMaven(config, previewWorkspace) : planGradle(config, previewWorkspace);
       console.log(JSON.stringify({ ...plan, launch: { java: config.javaCommand || '由工具链解析', main: config.mainClass || '由项目声明或唯一 main 方法确定',
         jvmArgs: config.jvmArgs, applicationArgs: config.applicationArgs },
         notes: [...plan.notes, '这是静态预览，未验证有效项目模型、主类和依赖文件'] }, null, 2));
       return 0;
     }
     workspace = mkdtempSync(join(tmpdir(), 'java-run-'));
-    if (!config.module && process.stdin.isTTY && process.stderr.isTTY) {
-      const candidates = tool === 'gradle' ? await discoverGradleProjects(config, workspace)
-        : await needsMavenModule(config) ? await discoverMavenProjects(config, workspace) : [];
-      if (candidates.length) {
+    if (!config.module && (config.action === 'init' || process.stdin.isTTY && process.stderr.isTTY)) {
+      const discoverModules = tool === 'gradle' || await needsMavenModule(config);
+      if (discoverModules) {
+        const candidates = tool === 'gradle' ? await discoverGradleProjects(config, workspace)
+          : await discoverMavenProjects(config, workspace);
         config.module = candidates.length === 1 ? candidates[0]!.value
           : await chooseCandidate(candidates, '选择启动项目（库模块可能没有 main）');
-        console.error(`java-run：已选择 --module=${config.module}，可将 module 保存到 .java-run.json`);
+        console.error(`java-run：已选择 --module=${config.module}`);
       }
     }
     const project = tool === 'maven' ? await prepareMaven(config, workspace) : await prepareGradle(config, workspace);
     const selectMainClass = process.stdin.isTTY && process.stderr.isTTY
       ? (candidates: readonly string[]) => chooseCandidate(candidates.map(value => ({ value, label: value })), '选择启动主类')
       : undefined;
+    if (configWriter) {
+      const mainClass = await resolveMainClass(config, project, selectMainClass);
+      configWriter.save(toProjectConfig(config, tool, mainClass));
+      console.error(`java-run：已保存 ${configWriter.path}\n在该工作区运行 java-run 即可启动 ${mainClass}（${tool}）`);
+      return 0;
+    }
     const launch = await createLaunchCommand(config, project, workspace, selectMainClass);
     console.error(`java-run：运行 ${launch.args[launch.args.indexOf('-classpath') + 2]}（${tool}）`);
     return (await runCommand(launch)).exitCode;

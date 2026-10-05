@@ -10,8 +10,8 @@
 | --- | --- |
 | `boot-single` | Spring Boot 作为普通运行依赖，验证主类发现、正常退出和各层参数 |
 | `boot-reactor` | `app` 依赖 `lib`，验证上游库、资源和有效 POM 变化；`other-app` 用于检测无关项目被构建或启动 |
-| `plain` | 显式主类、测试类路径、配置优先级、依赖变化、Maven 配置根和非零退出 |
-| `gradle-reactor` | `application` 主类声明、`app` 依赖 `lib`、资源与依赖变化、测试类路径和无关项目隔离 |
+| `plain` | 显式主类、初始化保存与配置复用、测试类路径、配置优先级、依赖变化、Maven 配置根和非零退出 |
+| `gradle-reactor` | `application` 主类声明、模块配置保存与复用、`app` 依赖 `lib`、资源与依赖变化、测试类路径和无关项目隔离 |
 
 夹具以 Java 17 为最低版本。Gradle 夹具不携带 Wrapper，CI 安装固定版本 Gradle；本地可使用 `JAVA_RUN_GRADLE_COMMAND` 指定 smoke 的 Gradle 命令。依赖版本在 POM 和 Gradle 构建文件中固定，用于验证实际加载结果。
 
@@ -28,6 +28,7 @@ Maven 的 `ci` profile 和 Gradle 的 `-PfixtureProfile=ci` 分别改变资源�
 - Gradle 修改库资源和应用依赖，分别验证资源准备与依赖重新解析
 - 启用测试类路径后恢复默认运行，验证测试输出与依赖不会遗留在普通启动中
 - `.java-run.json` 的默认值与 CLI 追加或覆盖值，验证配置合并顺序
+- Maven 与 Gradle 的 `init` 保存入口和参数后直接运行，验证初始化不启动应用及已有配置保护
 - 应用收到 `--exit=7` 后退出，验证运行器保留退出码
 
 `plain` 还会在临时副本中创建 `.mvn/maven.config`，检查项目目录和最近祖先配置根的属性实际参与资源过滤，并验证 `${maven.multiModuleProjectDirectory}` 是指向配置根的绝对路径。这些文件只属于测试副本，不作为夹具默认配置提交。

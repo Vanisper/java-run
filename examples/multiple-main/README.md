@@ -66,4 +66,22 @@ args=[--name=Alice]
   --main=com.example.ReportApplication -- --format=json
 ```
 
-非交互环境未指定主类时，java-run 会列出两个候选并要求明确入口，避免等待终端输入。
+非交互环境既没有保存主类、也没有传入 `--main` 时，java-run 会列出两个候选并要求明确入口，避免等待终端输入。
+
+## 保存入口与参数
+
+使用 `init` 将选择结果保存到示例项目的 `.java-run.json`：
+
+```sh
+bun run src/cli.ts init --cwd examples/multiple-main -- --format=table "hello world"
+```
+
+此命令同样编译项目并显示两个主类。输入 `2` 后保存 `ReportApplication` 和应用参数，此时不运行应用。随后执行：
+
+```sh
+bun run src/cli.ts --cwd examples/multiple-main
+```
+
+java-run 直接运行保存的入口，输出 `entry=com.example.ReportApplication` 和 `args=[--format=table, hello world]`，不再显示主类菜单。编译后二进制也支持同样的 `init` 命令。
+
+重复初始化默认保留已有文件并报错。需要重新选择时使用 `init --force`，原配置中的入口和参数会被本次选择及选项替换；取消或准备失败时保留原文件。

@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from '../src/cli/args';
+import { toProjectConfig } from '../src/cli/config';
 import { getHelpText, helpLog } from '../src/cli/help';
 
 let projectDirectory: string;
@@ -27,6 +28,7 @@ describe('框架中立的启动参数', () => {
   test('无参数默认运行，构建工具与构建策略默认自动选择', () => {
     const config = parse([]);
     expect(config.action).toBe('run');
+    expect(config.force).toBe(false);
     expect(config.cwd).toBe(projectDirectory);
     expect(config.buildTool).toBe('auto');
     expect(config.build).toBe('auto');
@@ -38,8 +40,8 @@ describe('框架中立的启动参数', () => {
     expect(config.buildArgs).toEqual([]);
   });
 
-  test('支持四个命令和帮助版本选项', () => {
-    for (const action of ['run', 'plan', 'help', 'version'] as const) {
+  test('支持启动、规划、初始化、帮助和版本命令', () => {
+    for (const action of ['run', 'plan', 'init', 'help', 'version'] as const) {
       expect(parse([action]).action).toBe(action);
     }
     for (const alias of ['--help', '-h']) {
@@ -141,6 +143,98 @@ describe('框架中立的启动参数', () => {
   });
 });
 
+describe('初始化参数', () => {
+  test('init 只保留显式启动参数，不读取或合并原配置', () => {
+    saveConfig({
+      buildTool: 'maven', module: ':old', mainClass: 'example.Old',
+      jvmArgs: ['-Xms256m'], applicationArgs: ['old'], buildArgs: ['--offline'],
+      build: 'none', includeTests: true,
+    });
+    const config = parse([
+      'init', '--cwd=.', '--tool=gradle', '--module=:new', '--main=example.New',
+      '--jvm-arg=-Xmx1g', '--build-arg=--info', '--arg=first', '--', 'second', '', ' ',
+    ]);
+    expect(config.action).toBe('init');
+    expect(config.buildTool).toBe('gradle');
+    expect(config.module).toBe(':new');
+    expect(config.mainClass).toBe('example.New');
+    expect(config.jvmArgs).toEqual(['-Xmx1g']);
+    expect(config.applicationArgs).toEqual(['first', 'second', '', ' ']);
+    expect(config.buildArgs).toEqual(['--info']);
+    expect(config.build).toBe('auto');
+    expect(config.includeTests).toBe(false);
+    expect(parse(['init']).mainClass).toBeUndefined();
+    expect(parse([]).mainClass).toBe('example.Old');
+  });
+
+  test('init 与 force 不解析无效旧配置，也不修改文件', () => {
+    const path = join(projectDirectory, '.java-run.json');
+    writeFileSync(path, '{invalid');
+    for (const argv of [['init'], ['init', '--force'], ['--force', 'init']]) {
+      const config = parse(argv);
+      expect(config.action).toBe('init');
+      expect(config.force).toBe(argv.includes('--force'));
+      expect(config.mainClass).toBeUndefined();
+      expect(readFileSync(path, 'utf8')).toBe('{invalid');
+    }
+    expect(() => parse(['init', '--unknown'])).toThrow('未知参数');
+  });
+
+  test('force 只属于 init，重复或带值时拒绝', () => {
+    for (const argv of [['--force'], ['run', '--force'], ['plan', '--force'], ['help', '--force'], ['version', '--force']]) {
+      expect(() => parse(argv)).toThrow('--force 仅允许用于 init');
+    }
+    expect(() => parse(['init', '--force', '--force'])).toThrow('不能重复指定');
+    expect(() => parse(['init', '--force=true'])).toThrow('不接受参数值');
+    expect(() => parse(['init', 'run'])).toThrow('命令');
+    expect(parse(['init', '--', '--force']).force).toBe(false);
+    expect(parse(['init', '--', '--force']).applicationArgs).toEqual(['--force']);
+  });
+
+  test('生成配置保存实际工具和主类，省略默认值与 CLI 专属字段', () => {
+    const config = parse([
+      'init', '--force', '--java=/tools/java', '--build-command=/tools/gradle',
+    ]);
+    const projectConfig = toProjectConfig(config, 'gradle', 'example.Resolved');
+    expect(projectConfig).toEqual({ buildTool: 'gradle', mainClass: 'example.Resolved' });
+    saveConfig(projectConfig);
+    expect(parse([]).buildTool).toBe('gradle');
+    expect(parse([]).mainClass).toBe('example.Resolved');
+    expect(parse([]).javaCommand).toBeUndefined();
+    expect(parse([]).buildCommand).toBeUndefined();
+    expect(parse([]).force).toBe(false);
+  });
+
+  test('生成的完整配置可往返读取，保留应用参数的空白及边界', () => {
+    const config = parse([
+      'init', '--module=:app', '--build=none', '--include-tests',
+      '--jvm-arg=-Dmessage=a=b', '--build-arg=--offline',
+      '--arg=hello world', '--', '', ' ', '--arg=literal', 'a=b',
+    ]);
+    const projectConfig = toProjectConfig(config, 'maven', 'example.App');
+    expect(projectConfig).toEqual({
+      buildTool: 'maven', module: ':app', mainClass: 'example.App',
+      jvmArgs: ['-Dmessage=a=b'], applicationArgs: ['hello world', '', ' ', '--arg=literal', 'a=b'],
+      buildArgs: ['--offline'], build: 'none', includeTests: true,
+    });
+    saveConfig(projectConfig);
+    const reloaded = parse([]);
+    expect(reloaded.action).toBe('run');
+    expect(reloaded.module).toBe(':app');
+    expect(reloaded.build).toBe('none');
+    expect(reloaded.includeTests).toBe(true);
+    expect(reloaded.jvmArgs).toEqual(config.jvmArgs);
+    expect(reloaded.applicationArgs).toEqual(config.applicationArgs);
+    expect(reloaded.buildArgs).toEqual(config.buildArgs);
+    projectConfig.jvmArgs!.push('-Xmx1g');
+    projectConfig.applicationArgs!.push('changed');
+    projectConfig.buildArgs!.push('--info');
+    expect(config.jvmArgs).toEqual(['-Dmessage=a=b']);
+    expect(config.applicationArgs).toEqual(['hello world', '', ' ', '--arg=literal', 'a=b']);
+    expect(config.buildArgs).toEqual(['--offline']);
+  });
+});
+
 describe('项目配置', () => {
   test('读取完整中立配置，标量覆盖，数组依次追加', () => {
     saveConfig({
@@ -190,7 +284,7 @@ describe('项目配置', () => {
   });
 
   test('配置未知字段拒绝，包括旧框架字段和只允许 CLI 的工具路径', () => {
-    for (const key of ['backend', 'springProfiles', 'properties', 'cwd', 'javaCommand', 'buildCommand', 'action', 'extra']) {
+    for (const key of ['backend', 'springProfiles', 'properties', 'cwd', 'javaCommand', 'buildCommand', 'action', 'force', 'extra']) {
       saveConfig({ [key]: 'x' });
       expect(() => parse([])).toThrow(`未知配置项：${key}`);
     }
@@ -200,8 +294,8 @@ describe('项目配置', () => {
     for (const config of [
       null, [], 'value', 12, { buildTool: null }, { buildTool: 'ant' }, { module: 42 },
       { module: 'a,b' }, { mainClass: false }, { mainClass: 'invalid-name' },
-      { jvmArgs: '-Xmx1g' }, { jvmArgs: [12] }, { applicationArgs: [''] },
-      { buildArgs: [null] }, { build: 'install' }, { includeTests: 'true' },
+      { jvmArgs: '-Xmx1g' }, { jvmArgs: [12] }, { jvmArgs: [' '] }, { applicationArgs: [null] },
+      { buildArgs: [null] }, { buildArgs: [''] }, { build: 'install' }, { includeTests: 'true' },
     ]) {
       saveConfig(config);
       expect(() => parse([])).toThrow('配置无效');
@@ -230,7 +324,10 @@ describe('项目配置', () => {
 describe('帮助与解析副作用', () => {
   test('帮助和版本不会读取配置或要求项目存在', () => {
     writeFileSync(join(projectDirectory, '.java-run.json'), '{invalid');
-    for (const args of [['help'], ['version'], ['--help'], ['-h'], ['--version'], ['run', '--help']]) {
+    for (const args of [
+      ['help'], ['version'], ['--help'], ['-h'], ['--version'], ['run', '--help'],
+      ['init', '--help'], ['init', '--force', '--help'], ['init', '--force', '--version'],
+    ]) {
       expect(() => parse(args)).not.toThrow();
       expect(() => parseArgs(args, join(projectDirectory, 'does-not-exist'))).not.toThrow();
     }

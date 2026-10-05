@@ -15,11 +15,11 @@ function resolveJar(java: string): string {
 }
 
 /**
- * 检查适配器输出并生成独立 Java 进程的启动命令
+ * 检查准备产物并确定启动主类
  *
- * @description 显式主类优先于项目声明；两者都缺失且有多个入口时才调用 selectMainClass
+ * @description 显式主类优先于项目声明；两者都缺失且有多个入口时才调用 selectMainClass，显式或声明的主类只检查名称格式
  */
-export async function createLaunchCommand(config: RunConfig, project: PreparedProject, workspace: string, selectMainClass?: MainClassSelector): Promise<CommandSpec> {
+export async function resolveMainClass(config: RunConfig, project: PreparedProject, selectMainClass?: MainClassSelector): Promise<string> {
   for (const path of project.classpath) {
     if (!existsSync(path)) throw new Error(`运行类路径缺少产物：${path}，请使用默认自动构建模式准备项目`);
   }
@@ -28,6 +28,12 @@ export async function createLaunchCommand(config: RunConfig, project: PreparedPr
   let main = config.mainClass || project.mainClass;
   if (!main) main = await discoverMainClass(classes, selectMainClass);
   if (!isJavaClassName(main)) throw new Error(`无效的 Java 主类：${main}`);
+  return main;
+}
+
+/** 生成独立 Java 进程的启动命令，缺少产物或无法确定主类时抛出错误 */
+export async function createLaunchCommand(config: RunConfig, project: PreparedProject, workspace: string, selectMainClass?: MainClassSelector): Promise<CommandSpec> {
+  const main = await resolveMainClass(config, project, selectMainClass);
   const java = config.javaCommand || project.javaCommand || (process.env.JAVA_HOME ? join(process.env.JAVA_HOME, 'bin', process.platform === 'win32' ? 'java.exe' : 'java') : 'java');
   const manifest = join(workspace, 'MANIFEST.MF');
   const classpathJar = join(workspace, 'classpath.jar');
