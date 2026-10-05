@@ -59,6 +59,35 @@ Maven 接受单个 reactor 选择器，如 `app`、`:artifactId` 或 `groupId:ar
 
 交互只选择目标和入口。运行参数通过选项或配置传入，配置由用户保存；Ctrl+C 或 EOF 取消返回 130。
 
+### 多入口选择示例
+
+[双入口示例项目](examples/multiple-main/README.md)包含 `HelloApplication` 和 `ReportApplication` 两个主类，未配置默认入口。将 java-run 放入 PATH 后，在本仓库根目录执行：
+
+```sh
+java-run --cwd examples/multiple-main -- --name=demo
+```
+
+准备完成后，终端会显示：
+
+```text
+选择启动主类
+  1. com.example.HelloApplication
+  2. com.example.ReportApplication
+选择 [1-2]：
+```
+
+输入 `2` 并回车，启动 `ReportApplication`，`--name=demo` 传给它的 `main(String[])`。此例只有一个 Maven 项目，菜单选择的是项目中的入口。
+
+脚本和 CI 可以直接指定主类：
+
+```sh
+java-run --cwd examples/multiple-main \
+  --main com.example.ReportApplication \
+  -- --name=demo
+```
+
+显式主类、配置中的 `mainClass` 或构建声明已经确定入口时，直接启动该入口，不显示主类菜单。
+
 ## 参数放在哪一层
 
 | 层次 | 配置方式 | 示例 | 影响 |
