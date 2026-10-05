@@ -326,3 +326,7 @@ Windows 上的 Maven 配置根超出系统代码页时，需要 Maven **3.9.2 �
 | [技术路线](docs/roadmap.md) | 已有工程能力、支持缺口和后续工作的验收条件 |
 | [参与开发](CONTRIBUTING.md) | 本地开发、验证、分支协作与发布流程 |
 | [验收夹具](tests/fixtures/README.md) | 真实项目场景、隔离方式和验证覆盖 |
+
+## 许可证
+
+本项目采用 [MIT 许可证](LICENSE)。

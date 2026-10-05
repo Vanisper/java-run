@@ -3,6 +3,7 @@
   "module": "src/cli.ts",
   "type": "module",
   "version": "0.0.5",
+  "license": "MIT",
   "scripts": {
     "version": "bumpp",
     "start": "bun run ./src/cli.ts",
