@@ -1,10 +1,10 @@
-import { createHash } from 'node:crypto';
-import { createReadStream, appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { platforms, platformFor } from './platforms';
+import { sha256, verifyBinaryChecksum } from './checksum';
 
 const projectRoot = resolve(import.meta.dir, '..');
 const licenseNames = ['LICENSE', 'LICENSE.md', 'LICENSE.txt'];
@@ -50,9 +50,11 @@ export function releaseNotes(version: string): string {
 | --- | --- |
 ${rows.join('\n')}
 
-每个 ZIP 包含 \`java-run-<平台>/\` 目录，内含 \`java-run\`（Windows 为 \`java-run.exe\`）、\`INSTALL.md\` 和项目许可证。
+每个 ZIP 包含 \`java-run-<平台>/\` 目录，内含 \`java-run\`（Windows 为 \`java-run.exe\`）、同名 \`.sha256\` 校验文件、\`INSTALL.md\` 和项目许可证。
 
 [SHA256 校验和](${download}/SHA256SUMS) · [安装指南](${repository}/blob/${encodeURIComponent(tag)}/docs/installation.md)
+
+包外的 \`SHA256SUMS\` 用于校验 ZIP，包内的 \`.sha256\` 文件用于校验解压后的二进制。
 
 解压后在该目录执行 \`./java-run --version\`，Windows PowerShell 执行 \`.\\java-run.exe --version\`，应输出 \`java-run ${version}\`。按安装指南加入 PATH 后，即可在 Java 项目目录使用 \`java-run\`。
 
@@ -90,17 +92,12 @@ function powershell(script: string, environment: NodeJS.ProcessEnv): string {
   });
 }
 
-async function digest(path: string): Promise<string> {
-  const hash = createHash('sha256');
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
-  return hash.digest('hex');
-}
-
-/** 打包当前平台文件，ZIP 内包含固定目录、安装指南及已有许可证 */
+/** 校验并打包当前平台文件，ZIP 内包含二进制校验和、安装指南及已有许可证 */
 export async function packageRelease(directory: string, platformName: string, documentationRoot = projectRoot): Promise<string> {
   const platform = platformFor(platformName);
   const binary = resolve(directory, platform.binary);
   await assertFile(binary);
+  const checksum = await verifyBinaryChecksum(binary);
   const documents = await packageDocuments(documentationRoot);
   // 与产物共用文件系统，避免 Windows runner 的跨盘 rename 失败
   const temporary = await mkdtemp(resolve(directory, '.java-run-package-'));
@@ -109,6 +106,8 @@ export async function packageRelease(directory: string, platformName: string, do
     await mkdir(folder);
     const stagedBinary = join(folder, platform.binary);
     await copyFile(binary, stagedBinary);
+    await copyFile(checksum, `${stagedBinary}.sha256`);
+    await verifyBinaryChecksum(stagedBinary);
     if (process.platform !== 'win32') await chmod(stagedBinary, 0o755);
     for (const file of documents) await copyFile(file.source, join(folder, file.name));
     const archive = join(temporary, platform.archive);
@@ -129,7 +128,8 @@ export async function verifyReleasePackage(directory: string, platformName: stri
   const archive = resolve(directory, platform.archive);
   await assertFile(archive);
   const documents = await packageDocuments(documentationRoot);
-  const expected = [platform.binary, ...documents.map(file => file.name)].map(name => `${platform.folder}/${name}`).sort();
+  const checksumName = `${platform.binary}.sha256`;
+  const expected = [platform.binary, checksumName, ...documents.map(file => file.name)].map(name => `${platform.folder}/${name}`).sort();
   const entries: string[] = process.platform === 'win32'
     ? JSON.parse(powershell("Add-Type -AssemblyName System.IO.Compression.FileSystem; $packageZip = [System.IO.Compression.ZipFile]::OpenRead($env:JAVA_RUN_PACKAGE_ARCHIVE); try { ConvertTo-Json -InputObject @($packageZip.Entries | ForEach-Object { $_.FullName }) -Compress } finally { $packageZip.Dispose() }", { JAVA_RUN_PACKAGE_ARCHIVE: archive }))
     : command('unzip', ['-Z1', archive]).trimEnd().split('\n');
@@ -149,12 +149,17 @@ export async function verifyReleasePackage(directory: string, platformName: stri
     const folder = join(temporary, platform.folder);
     if (!(await lstat(folder)).isDirectory()) throw new Error('ZIP 顶层必须为发布目录');
     const binary = join(folder, platform.binary);
-    for (const file of [{ name: platform.binary, source: resolve(directory, platform.binary) }, ...documents]) {
+    for (const file of [
+      { name: platform.binary, source: resolve(directory, platform.binary) },
+      { name: checksumName, source: resolve(directory, checksumName) },
+      ...documents,
+    ]) {
       const unpacked = join(folder, file.name);
       await assertFile(unpacked);
       await assertFile(file.source);
-      if (await digest(unpacked) !== await digest(file.source)) throw new Error(`ZIP 文件内容不一致：${file.name}`);
+      if (await sha256(unpacked) !== await sha256(file.source)) throw new Error(`ZIP 文件内容不一致：${file.name}`);
     }
+    await verifyBinaryChecksum(binary);
     if (process.platform !== 'win32' && ((await lstat(binary)).mode & 0o111) !== 0o111) {
       throw new Error('ZIP 中的 java-run 未保留可执行权限');
     }
@@ -187,7 +192,7 @@ export async function writeReleaseChecksums(directory: string, version: string):
     const path = resolve(directory, file);
     const stat = await lstat(path);
     if (!stat.isFile() || stat.size === 0) throw new Error(`发布产物不是非空普通文件：${file}`);
-    lines.push(`${await digest(path)}  ${file}`);
+    lines.push(`${await sha256(path)}  ${file}`);
   }
   const manifest = `${lines.join('\n')}\n`;
   await writeFile(resolve(directory, 'SHA256SUMS'), manifest);

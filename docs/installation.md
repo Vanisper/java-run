@@ -25,7 +25,7 @@ https://github.com/Vanisper/java-run/releases/download/vX.Y.Z/java-run-<平台>.
 https://github.com/Vanisper/java-run/releases/download/vX.Y.Z/SHA256SUMS
 ```
 
-将 `vX.Y.Z` 替换为所选 Release 的完整标签；预发布版本也使用完整标签下载。`/releases/latest/download/` 用于最新稳定版。ZIP 解压后只有一个 `java-run-<平台>/` 目录，内含 `java-run` 或 `java-run.exe`、本安装指南 `INSTALL.md`，以及存在时按原文件名附带的许可证。
+将 `vX.Y.Z` 替换为所选 Release 的完整标签；预发布版本也使用完整标签下载。`/releases/latest/download/` 用于最新稳定版。ZIP 解压后只有一个 `java-run-<平台>/` 目录，内含 `java-run` 或 `java-run.exe`、对应的 `java-run.sha256` 或 `java-run.exe.sha256`、本安装指南 `INSTALL.md`，以及存在时按原文件名附带的许可证。Release 的 `SHA256SUMS` 校验下载的 ZIP，包内 `.sha256` 校验解压后的二进制。
 
 ## macOS / Linux
 
@@ -55,10 +55,28 @@ sha256sum "$asset"
 
 ```sh
 unzip "$asset"
-chmod +x "java-run-${platform}/java-run"
-"./java-run-${platform}/java-run" version
+cd "java-run-${platform}"
+```
+
+在解压目录中核对二进制。macOS 使用：
+
+```sh
+shasum -a 256 -c java-run.sha256
+```
+
+Linux 使用：
+
+```sh
+sha256sum --check java-run.sha256
+```
+
+确认输出 `java-run: OK` 后，再检查版本并安装：
+
+```sh
+chmod +x java-run
+./java-run version
 mkdir -p "$HOME/.local/bin"
-cp "java-run-${platform}/java-run" "$HOME/.local/bin/java-run"
+cp java-run "$HOME/.local/bin/java-run"
 export PATH="$HOME/.local/bin:$PATH"
 java-run version
 ```
@@ -73,14 +91,24 @@ java-run version
 Get-FileHash -Algorithm SHA256 .\java-run-windows-x64.zip
 ```
 
-将结果与 `SHA256SUMS` 中 `java-run-windows-x64.zip` 对应的值核对，比较时忽略字母大小写。一致后解压并检查版本：
+将结果与 `SHA256SUMS` 中 `java-run-windows-x64.zip` 对应的值核对，比较时忽略字母大小写。一致后解压并核对二进制：
 
 ```powershell
 Expand-Archive -Path .\java-run-windows-x64.zip -DestinationPath .\java-run-download
-& .\java-run-download\java-run-windows-x64\java-run.exe version
+Set-Location .\java-run-download\java-run-windows-x64
+$expectedHash = ((Get-Content -Raw .\java-run.exe.sha256) -split '\s+')[0]
+if ((Get-FileHash -Algorithm SHA256 .\java-run.exe).Hash -ne $expectedHash) {
+    throw 'java-run.exe SHA-256 校验失败'
+}
+```
+
+校验通过后，在同一目录检查版本并安装：
+
+```powershell
+& .\java-run.exe version
 $installDir = Join-Path $env:LOCALAPPDATA 'Programs\java-run'
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-Copy-Item -Force .\java-run-download\java-run-windows-x64\java-run.exe $installDir
+Copy-Item -Force .\java-run.exe $installDir
 $env:Path = "$installDir;$env:Path"
 java-run version
 ```

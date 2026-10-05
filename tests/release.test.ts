@@ -5,6 +5,28 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { assertReleaseAssets, packageRelease, releaseMetadata, releaseNotes, verifyReleasePackage, writeReleaseChecksums } from '../scripts/release';
+import { writeBinaryChecksum } from '../scripts/checksum';
+
+function updateArchive(archive: string, entry: string, content?: string): void {
+  const temporary = mkdtempSync(join(tmpdir(), 'java-run-zip-update-'));
+  try {
+    let result;
+    if (process.platform === 'win32') {
+      const script = "Add-Type -AssemblyName System.IO.Compression.FileSystem; $archive = [System.IO.Compression.ZipFile]::Open($env:JAVA_RUN_TEST_ARCHIVE, [System.IO.Compression.ZipArchiveMode]::Update); try { $previous = $archive.Entries | Where-Object { $_.FullName.Replace('\\', '/') -eq $env:JAVA_RUN_TEST_ENTRY }; $previous.Delete(); if ($env:JAVA_RUN_TEST_CONTENT) { $entry = $archive.CreateEntry($env:JAVA_RUN_TEST_ENTRY); $stream = $entry.Open(); try { $bytes = [System.Text.Encoding]::UTF8.GetBytes($env:JAVA_RUN_TEST_CONTENT); $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() } } } finally { $archive.Dispose() }";
+      result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference = 'Stop'; ${script}`], {
+        env: { ...process.env, JAVA_RUN_TEST_ARCHIVE: archive, JAVA_RUN_TEST_ENTRY: entry, JAVA_RUN_TEST_CONTENT: content ?? '' },
+        encoding: 'utf8',
+      });
+    } else if (content === undefined) {
+      result = spawnSync('zip', ['-q', '-d', archive, entry], { encoding: 'utf8' });
+    } else {
+      mkdirSync(join(temporary, entry, '..'), { recursive: true });
+      writeFileSync(join(temporary, entry), content);
+      result = spawnSync('zip', ['-q', archive, entry], { cwd: temporary, encoding: 'utf8' });
+    }
+    if (result.error || result.status !== 0) throw new Error(`修改测试 ZIP 失败：${result.error?.message ?? result.stderr}`);
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
+}
 
 describe('发布产物契约', () => {
   test('标签必须匹配包版本，稳定版与预发布生成五个独立产物', () => {
@@ -72,6 +94,8 @@ describe('发布产物契约', () => {
     expect(notes).toContain('Wrapper');
     expect(notes).toContain('java-run 1.2.3-rc.1');
     expect(notes).toContain('替换原文件');
+    expect(notes).toContain('包外的 `SHA256SUMS` 用于校验 ZIP');
+    expect(notes).toContain('包内的 `.sha256` 文件用于校验解压后的二进制');
     expect(releaseNotes('1.2.3+build.7')).toContain('/download/v1.2.3%2Bbuild.7/');
   });
 
@@ -88,12 +112,16 @@ describe('发布产物契约', () => {
     writeFileSync(binary, bytes);
     chmodSync(binary, 0o755);
     try {
+      await writeBinaryChecksum(binary);
       const archive = await packageRelease(directory, platform, documentation);
       expect(archive).toBe(join(directory, `java-run-${platform}.zip`));
       const unpacked = await verifyReleasePackage(directory, platform, documentation);
       try {
         expect(unpacked.binary).toEndWith(`/java-run-${platform}/${binaryName}`.replaceAll('/', process.platform === 'win32' ? '\\' : '/'));
         expect(readFileSync(unpacked.binary)).toEqual(Buffer.from(bytes));
+        const digest = createHash('sha256').update(Buffer.from(bytes)).digest('hex');
+        expect(readFileSync(`${unpacked.binary}.sha256`, 'utf8')).toBe(`${digest}  ${binaryName}\n`);
+        expect(readFileSync(`${unpacked.binary}.sha256`)).toEqual(readFileSync(`${binary}.sha256`));
         expect(readFileSync(join(unpacked.binary, '..', 'INSTALL.md'), 'utf8')).toBe('# 安装指南\n');
         expect(readFileSync(join(unpacked.binary, '..', 'LICENSE'), 'utf8')).toBe('Release package license\n');
         if (process.platform !== 'win32') {
@@ -107,6 +135,8 @@ describe('发布产物契约', () => {
       rmSync(join(documentation, 'LICENSE'));
       await expect(verifyReleasePackage(directory, platform, documentation)).rejects.toThrow('ZIP 内容');
       writeFileSync(binary, `${bytes}# replacement\n`);
+      await expect(packageRelease(directory, platform, documentation)).rejects.toThrow();
+      await writeBinaryChecksum(binary);
       await packageRelease(directory, platform, documentation);
       const replacement = await verifyReleasePackage(directory, platform, documentation);
       try {
@@ -124,6 +154,7 @@ describe('发布产物契约', () => {
     mkdirSync(join(documentation, 'docs'), { recursive: true });
     writeFileSync(join(directory, binaryName), 'binary');
     try {
+      await writeBinaryChecksum(join(directory, binaryName));
       await expect(packageRelease(directory, platform, documentation)).rejects.toThrow();
       expect(existsSync(join(directory, `java-run-${platform}.zip`))).toBe(false);
       writeFileSync(join(documentation, 'docs/installation.md'), 'Installation instructions\n');
@@ -133,6 +164,37 @@ describe('发布产物契约', () => {
       await expect(verifyReleasePackage(directory, platform, documentation)).rejects.toThrow('文件内容不一致');
       writeFileSync(join(directory, `java-run-${platform}.zip`), 'not a ZIP');
       await expect(verifyReleasePackage(directory, platform, documentation)).rejects.toThrow('ZIP 操作失败');
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }, 30000);
+
+  test('二进制校验文件必须存在且有效，ZIP 缺失或替换校验文件时拒绝验收', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'java-run-release-checksum-'));
+    const documentation = join(directory, 'project');
+    const platform = process.platform === 'win32' ? 'windows-x64' : 'linux-x64';
+    const binaryName = process.platform === 'win32' ? 'java-run.exe' : 'java-run';
+    const binary = join(directory, binaryName);
+    const checksum = `${binary}.sha256`;
+    const entry = `java-run-${platform}/${binaryName}.sha256`;
+    mkdirSync(join(documentation, 'docs'), { recursive: true });
+    writeFileSync(join(documentation, 'docs/installation.md'), 'Installation instructions\n');
+    writeFileSync(binary, 'binary');
+    try {
+      await expect(packageRelease(directory, platform, documentation)).rejects.toThrow();
+      expect(existsSync(join(directory, `java-run-${platform}.zip`))).toBe(false);
+      writeFileSync(checksum, `${'0'.repeat(64)}  ${binaryName}\n`);
+      await expect(packageRelease(directory, platform, documentation)).rejects.toThrow();
+      await writeBinaryChecksum(binary);
+      const archive = await packageRelease(directory, platform, documentation);
+      updateArchive(archive, entry);
+      await expect(verifyReleasePackage(directory, platform, documentation)).rejects.toThrow('ZIP 内容');
+      await packageRelease(directory, platform, documentation);
+      const changed = `${'0'.repeat(64)}  ${binaryName}\n`;
+      updateArchive(archive, entry, changed);
+      await expect(verifyReleasePackage(directory, platform, documentation)).rejects.toThrow('文件内容不一致');
+      writeFileSync(checksum, changed);
+      await expect(verifyReleasePackage(directory, platform, documentation)).rejects.toThrow();
+      await writeBinaryChecksum(binary);
+      await expect(verifyReleasePackage(directory, platform, documentation)).rejects.toThrow('文件内容不一致');
     } finally { rmSync(directory, { recursive: true, force: true }); }
   }, 30000);
 });

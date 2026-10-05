@@ -31,7 +31,7 @@ java-run 的产品目标是为 Maven 与 Gradle 的 Java 源码工作区提供�
 - 静态计划、帮助和版本遵守各自的副作用契约
 - Windows 编码、Maven 配置根和批处理调用有对应的原生验证
 
-[Release 工作流](../.github/workflows/release.yaml) 在固定原生 runner 上构建 Windows x64、Linux x64 / arm64、macOS x64 / arm64 五种压缩二进制。每份文件在 JDK 21 下执行完整 smoke，在 JDK 17 下执行 quick 启动验收，再与独立安装指南、许可证打包为 ZIP。实际 ZIP 经原生解压、二进制字节一致性检查与 quick 启动验收后上传。汇总要求五种非空 ZIP 齐全，并生成和核对 SHA-256。
+[Release 工作流](../.github/workflows/release.yaml) 在固定原生 runner 上构建 Windows x64、Linux x64 / arm64、macOS x64 / arm64 五种压缩二进制。编译时生成对应的 `.sha256` 校验文件，打包前核对二进制，再与校验文件、独立安装指南、许可证一起打包为 ZIP。每份二进制在 JDK 21 下执行完整 smoke；实际 ZIP 经原生解压、源文件一致性与包内 SHA-256 校验后，使用 JDK 17 对解压出的文件执行 quick 启动验收。汇总要求五种非空 ZIP 齐全，并生成和核对覆盖 ZIP 的 `SHA256SUMS`。
 
 ZIP 名称固定为 `java-run-<平台>.zip`，版本由 GitHub Release 的下载路径表达；每份包内使用固定的可执行文件名。Release 正文自动生成版本下载表、安装说明与 GitHub 变更说明，安装指南同时随 ZIP 分发。[安装指南](installation.md) 说明最新稳定版和指定版本的下载、校验、PATH 配置与升级方式。
 

@@ -1,5 +1,7 @@
 import { spawnSync } from 'node:child_process';
+import { rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { writeBinaryChecksum } from './checksum';
 import { platforms, type BuildTarget } from './platforms';
 
 const projectRoot = resolve(import.meta.dir, '..');
@@ -37,9 +39,12 @@ export function parseCompileOptions(argv: readonly string[], cwd = projectRoot):
   return options;
 }
 
-/** 编译独立二进制，构建失败保留 Bun 的退出码 */
-function main(argv: string[]): number {
+/** 编译独立二进制及校验和，构建失败保留 Bun 的退出码 */
+async function main(argv: string[]): Promise<number> {
   const options = parseCompileOptions(argv);
+  const windows = options.target ? options.target.startsWith('bun-windows-') : process.platform === 'win32';
+  const binary = windows && !options.outfile.endsWith('.exe') ? `${options.outfile}.exe` : options.outfile;
+  await rm(`${binary}.sha256`, { force: true });
   const args = [
     'build', resolve(projectRoot, 'src/cli.ts'), '--compile', '--minify', '--sourcemap',
     '--no-compile-autoload-dotenv', '--no-compile-autoload-bunfig',
@@ -48,12 +53,14 @@ function main(argv: string[]): number {
   if (options.target) args.push(`--target=${options.target}`);
   const result = spawnSync(process.execPath, args, { cwd: projectRoot, stdio: 'inherit' });
   if (result.error) throw result.error;
-  return result.status ?? 1;
+  const status = result.status ?? 1;
+  if (status === 0) await writeBinaryChecksum(binary);
+  return status;
 }
 
 if (import.meta.main) {
   try {
-    process.exitCode = main(Bun.argv.slice(2));
+    process.exitCode = await main(Bun.argv.slice(2));
   } catch (error) {
     console.error(`java-run：${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;

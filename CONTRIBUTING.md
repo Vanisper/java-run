@@ -24,10 +24,10 @@ bun run smoke
 | `bun run typecheck` | TypeScript 类型检查 |
 | `bun test` | 参数、配置、适配器、主类、类路径、交互和进程行为回归 |
 | `bun run check` | 类型检查与回归测试 |
-| `bun run compile` | 构建压缩后的本机二进制到 `dist`，与发布产物使用同一入口 |
+| `bun run compile` | 构建压缩后的本机二进制及其 `.sha256` 校验文件到 `dist`，与发布产物使用同一入口 |
 | `bun run smoke` | 使用该二进制运行真实 Maven / Gradle 夹具 |
 
-编译入口支持等号形式的 `--target=<目标>` 和 `--outfile=<路径>`，可用目标与发布平台表一致。默认产物为 `dist/java-run`，Windows 自动使用 `.exe` 扩展名。二进制不自动加载运行目录中的 `.env` 或 `bunfig.toml`，显式继承的环境变量仍然生效。
+编译入口支持等号形式的 `--target=<目标>` 和 `--outfile=<路径>`，可用目标与发布平台表一致。默认产物为 `dist/java-run`，Windows 自动使用 `.exe` 扩展名。编译成功后在实际二进制旁生成 `<二进制文件名>.sha256`，例如 `dist/java-run.sha256` 或 `dist/java-run.exe.sha256`；自定义输出路径也使用同样规则。校验文件使用标准 SHA-256 清单格式，文件名相对于其所在目录。二进制不自动加载运行目录中的 `.env` 或 `bunfig.toml`，显式继承的环境变量仍然生效。
 
 回归测试中的真实 Gradle 用例使用 PATH 中的 Gradle；找不到时会跳过，不能据此判断 Gradle 适配已经通过验收。可通过 `JAVA_RUN_TEST_GRADLE` 指定测试命令，通过 `GRADLE_USER_HOME` 隔离测试用的 Gradle 缓存：
 
@@ -112,11 +112,11 @@ docs: 说明参数传递规则
 | `java-run-darwin-arm64.zip` | `bun-darwin-arm64` | `macos-15` |
 | `java-run-darwin-x64.zip` | `bun-darwin-x64` | `macos-15-intel` |
 
-每个任务使用 `bun run compile` 生成一次待分发的压缩二进制，在 JDK 21 下执行完整 smoke。随后将该文件打包，不重新构建：Linux / macOS 使用 `zip`，Windows 使用 PowerShell `Compress-Archive`。实际 ZIP 会在原生环境中解压，核对其中二进制与已验收文件的字节一致，再使用 JDK 17 对解压出的文件执行 quick 启动验收。
+每个任务使用 `bun run compile` 生成一次待分发的压缩二进制和对应校验文件，在 JDK 21 下执行完整 smoke。打包前按编译时的校验文件核对源二进制，再将这两个文件一起打包：Linux / macOS 使用 `zip`，Windows 使用 PowerShell `Compress-Archive`。实际 ZIP 会在原生环境中解压，核对包内二进制及校验文件与源文件一致，并按包内校验文件验证二进制，再使用 JDK 17 对解压出的文件执行 quick 启动验收。
 
-每份 ZIP 包含一个 `java-run-<平台>/` 目录，目录内为固定名称的 `java-run` 或 `java-run.exe`、从 [安装指南](docs/installation.md) 复制的 `INSTALL.md`，以及存在的许可证文件。编译参数、发布矩阵、包内目录和公开资产名称共用 [平台清单](scripts/platforms.ts)。公开名称不带版本号，版本由 `/releases/download/v<版本>/` URL 表达；`/releases/latest/download/` 提供最新稳定版的固定下载入口。
+每份 ZIP 包含一个 `java-run-<平台>/` 目录，目录内为固定名称的 `java-run` 或 `java-run.exe`、对应的 `java-run.sha256` 或 `java-run.exe.sha256`、从 [安装指南](docs/installation.md) 复制的 `INSTALL.md`，以及存在的许可证文件。编译参数、发布矩阵、包内目录和公开资产名称共用 [平台清单](scripts/platforms.ts)。公开名称不带版本号，版本由 `/releases/download/v<版本>/` URL 表达；`/releases/latest/download/` 提供最新稳定版的固定下载入口。
 
-汇总步骤要求恰好包含上述五种非空 ZIP，拒绝缺失、多余或无效产物，然后生成并核对覆盖五个 ZIP 的 `SHA256SUMS`。源码 Check 的双 JDK 完整回归与发布文件的 JDK 21 full / JDK 17 quick 范围分别声明，不能将 quick 扩大为完整验收。Linux 验收采用 Ubuntu 24.04 的 glibc 环境，不代表 musl 或其他系统版本已通过验收。
+汇总步骤要求恰好包含上述五种非空 ZIP，拒绝缺失、多余或无效产物，然后生成并核对覆盖五个 ZIP 的 `SHA256SUMS`。包内 `.sha256` 校验二进制内容，Release 单独提供的 `SHA256SUMS` 校验最终下载的 ZIP。源码 Check 的双 JDK 完整回归与发布文件的 JDK 21 full / JDK 17 quick 范围分别声明，不能将 quick 扩大为完整验收。Linux 验收采用 Ubuntu 24.04 的 glibc 环境，不代表 musl 或其他系统版本已通过验收。
 
 ### 发布流程演练
 
@@ -129,6 +129,16 @@ docs: 说明参数传递规则
 ```sh
 bun scripts/release.ts metadata
 ```
+
+在原生机器上可构建并验收对应平台的 ZIP，例如 macOS arm64：
+
+```sh
+bun run compile
+bun run smoke --suite=full
+bun scripts/release.ts package darwin-arm64
+```
+
+`package` 使用已有的二进制和校验文件，输出 `dist/java-run-darwin-arm64.zip`。其他平台使用对应的平台名，并在该平台的原生机器上运行。
 
 ### 标签发布与重试
 

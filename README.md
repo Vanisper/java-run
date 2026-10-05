@@ -16,7 +16,7 @@ java-run 为 Maven 和 Gradle 源码工作区提供统一的开发启动入口�
 
 macOS / Linux 使用 `uname -m` 查看体系结构：`x86_64` 对应 x64，`arm64` / `aarch64` 对应 arm64。Windows 可在“设置 → 系统 → 关于”查看系统类型，当前提供 x64 版本。Linux 产物在 Ubuntu 24.04 的 glibc 环境验收；musl（如 Alpine）和其他系统版本未纳入发布验收。
 
-按照 [安装指南](docs/installation.md) 核对 SHA-256、解压并将可执行文件加入 PATH；ZIP 内也附有独立的 `INSTALL.md`。随后在 Java 工作区根目录执行：
+按照 [安装指南](docs/installation.md) 核对 ZIP 和包内二进制的 SHA-256，再将可执行文件加入 PATH；ZIP 内附有二进制校验文件和独立的 `INSTALL.md`。随后在 Java 工作区根目录执行：
 
 ```sh
 java-run
@@ -34,7 +34,7 @@ bun install --frozen-lockfile
 bun run compile
 ```
 
-产物为 `dist/java-run`，Windows 使用 `dist/java-run.exe`。将产物放入 PATH 后即可使用上述命令。源码调试可以直接使用：
+产物为 `dist/java-run` 和 `dist/java-run.sha256`；Windows 使用 `dist/java-run.exe` 和 `dist/java-run.exe.sha256`。校验文件记录二进制的 SHA-256，可按[安装指南](docs/installation.md)中的二进制校验命令在 `dist` 目录核对。将可执行文件放入 PATH 后即可使用上述命令。源码调试可以直接使用：
 
 ```sh
 bun run src/cli.ts --cwd /path/to/java-project
