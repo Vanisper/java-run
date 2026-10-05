@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { assertJavaArguments, readJavaNativeEncoding } from '../src/process/java-arguments';
+import { assertJavaArguments, JavaArgumentEncodingError, readJavaNativeEncoding } from '../src/process/java-arguments';
 
 type Fixture = 'boot-single' | 'boot-reactor' | 'plain' | 'gradle-reactor';
 type Suite = 'quick' | 'full';
@@ -103,7 +103,7 @@ async function exists(file: string): Promise<boolean> {
   }
 }
 
-/** 检查静态预览没有生成构建工具输出或旧版缓存 */
+/** 检查静态预览没有生成构建工具输出或项目缓存 */
 async function assertUnbuilt(directory: string): Promise<void> {
   for (const name of ['target', 'build', '.gradle', '.cache']) {
     if (await exists(path.join(directory, name))) throw new Error(`静态预览生成了 ${name}`);
@@ -137,7 +137,7 @@ async function main(): Promise<void> {
     try {
       await assertJavaArguments(java, ['hello world #中文%'], workspace);
     } catch (error) {
-      if (!(error instanceof Error) || !error.message.includes('无法完整表示')) throw error;
+      if (!(error instanceof JavaArgumentEncodingError)) throw error;
       unicodeArguments = false;
     }
     const specialValue = unicodeArguments ? 'hello world #中文%' : 'hello world #%';

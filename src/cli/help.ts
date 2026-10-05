@@ -14,7 +14,7 @@ export function getHelpText(): string {
   version, --version      显示版本，不读取项目配置
 
 常用选项：
-  --cwd <path>            项目根目录，默认当前目录
+  --cwd <path>            工作区根目录，默认当前目录
   --module <selector>     单个 Maven reactor 选择器或 Gradle 项目路径
   --main <class>          启动类，默认使用构建声明或唯一的已编译 main 方法
   --jvm-arg=<value>       JVM 参数，可重复；负号开头的值必须用等号
@@ -31,7 +31,7 @@ export function getHelpText(): string {
   --build-command <cmd>   构建工具可执行文件，默认优先使用项目 Wrapper
 
 项目配置：
-  从最终项目目录读取 .java-run.json，不向父目录查找。
+  从 --cwd 指定的工作区根目录读取 .java-run.json，不向父目录查找。
   可用字段：buildTool、module、mainClass、jvmArgs、applicationArgs、
             buildArgs、build、includeTests
   CLI 标量覆盖配置，数组在配置之后追加。
@@ -46,7 +46,7 @@ export function getHelpText(): string {
 示例：
   java-run
   java-run --module :app
-  java-run plan --tool gradle --module :apps:admin-server
+  java-run plan --tool gradle --module :app
   java-run --jvm-arg=-Xmx1g -- --server.port=8081
   java-run --main com.example.Application --build-arg=-Dcustom.mode=dev
 `;

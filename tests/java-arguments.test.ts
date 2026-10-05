@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
 import iconv from 'iconv-lite';
-import { assertJavaArguments, assertRepresentableArguments } from '../src/process/java-arguments';
+import { assertJavaArguments, assertRepresentableArguments, JavaArgumentEncodingError } from '../src/process/java-arguments';
 import { runCommand } from '../src/process/exec';
 
 describe('Java 原生命令行编码', () => {
@@ -14,6 +14,8 @@ describe('Java 原生命令行编码', () => {
       } catch (caught) {
         error = caught as Error;
       }
+      expect(error).toBeInstanceOf(JavaArgumentEncodingError);
+      expect((error as JavaArgumentEncodingError).encoding).toBe('windows1252');
       expect(error?.message).toContain('windows1252');
       expect(error?.message).toContain('系统区域设置');
       expect(error?.message).not.toContain(argument);
@@ -25,7 +27,15 @@ describe('Java 原生命令行编码', () => {
     expect(() => assertRepresentableArguments(['中文'], 'gbk')).not.toThrow();
     expect(() => assertRepresentableArguments(['中文', 'Cafe\u0305', '😀'], 'UTF-8')).not.toThrow();
     expect(() => assertRepresentableArguments(['😀'], 'gbk')).toThrow('无法完整表示');
-    expect(() => assertRepresentableArguments(['中文'], 'unknown-charset')).toThrow('无法验证');
+    let unknownEncoding: unknown;
+    try {
+      assertRepresentableArguments(['中文'], 'unknown-charset');
+    } catch (error) {
+      unknownEncoding = error;
+    }
+    expect(unknownEncoding).toBeInstanceOf(Error);
+    expect(unknownEncoding).not.toBeInstanceOf(JavaArgumentEncodingError);
+    expect((unknownEncoding as Error).message).toContain('无法验证');
   });
 
   test('ASCII 参数和非 Windows 平台不调用 Java 探针', async () => {
@@ -51,7 +61,7 @@ describe('Java 原生命令行编码', () => {
     if (iconv.decode(iconv.encode(argument, encoding!), encoding!) === argument) {
       await assertJavaArguments(java, [argument], process.cwd());
     } else {
-      await expect(assertJavaArguments(java, [argument], process.cwd())).rejects.toThrow('无法完整表示');
+      await expect(assertJavaArguments(java, [argument], process.cwd())).rejects.toBeInstanceOf(JavaArgumentEncodingError);
     }
     await expect(assertJavaArguments('missing-java-argument-probe', [argument], process.cwd()))
       .rejects.toMatchObject({ name: 'CommandError', stage: '检测 Java 原生命令行编码', exitCode: 127 });

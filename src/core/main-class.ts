@@ -62,10 +62,22 @@ export function findMainClasses(directories: string[]): string[] {
   return [...candidates].sort();
 }
 
-/** 在目标项目输出中选择唯一主类，多个候选时要求用户显式选择 */
-export function discoverMainClass(directories: string[]): string {
+/**
+ * 从多个已确认入口中选择一个主类
+ *
+ * @description candidates 至少包含两个按类名排序的入口；返回其中一个，选择失败时抛出的错误原样传递
+ */
+export type MainClassSelector = (candidates: readonly string[]) => Promise<string>;
+
+/**
+ * 在目标项目输出中解析主类
+ *
+ * @description 唯一入口直接采用；多个入口时调用 select，未提供时抛出含候选列表的错误
+ */
+export async function discoverMainClass(directories: string[], select?: MainClassSelector): Promise<string> {
   const choices = findMainClasses(directories);
   if (choices.length === 1) return choices[0]!;
   if (!choices.length) throw new Error('目标项目中未找到 public static main(String[])，请检查构建产物或用 --main 指定入口');
+  if (select) return select(choices);
   throw new Error(`目标项目有多个主类，请使用 --main 指定：\n${choices.map(name => `  ${name}`).join('\n')}`);
 }

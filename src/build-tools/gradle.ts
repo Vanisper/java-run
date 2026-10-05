@@ -85,7 +85,6 @@ export function planGradle(config: RunConfig, workspace: string): BuildPlan {
         ? 'Gradle 任务图准备目标项目和运行依赖，不执行测试'
         : '不构建源码，要求目标项目和运行依赖已有可用产物',
       '主类、运行类路径和 Java 工具链将在执行 Gradle 后解析',
-      '项目根、目标模块和输出路径由临时脚本读取 UTF-8 请求，不经 Java 原生命令行编码转换',
     ],
   };
 }

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { planMaven, prepareMaven, resolveMavenBaseDirectory } from '../src/build-tools/maven';
 import { parseArgs } from '../src/cli/args';
-import { assertJavaArguments } from '../src/process/java-arguments';
+import { assertJavaArguments, JavaArgumentEncodingError } from '../src/process/java-arguments';
 
 const config = parseArgs(['plan']);
 const temporaryDirectories: string[] = [];
@@ -75,7 +75,7 @@ describe('Maven 配置根', () => {
     try {
       await assertJavaArguments(java, [`-Dmaven.multiModuleProjectDirectory=${project}`], project);
     } catch (error) {
-      if (!(error instanceof Error) || !error.message.includes('无法完整表示')) throw error;
+      if (!(error instanceof JavaArgumentEncodingError)) throw error;
       requiresBridge = true;
     }
     const prepared = prepareMaven(parseArgs(['--cwd', project, '--build-command', batch]), workspace);

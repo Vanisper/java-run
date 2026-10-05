@@ -2,7 +2,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { parseStringPromise } from 'xml2js';
 import { CommandError, runCommand } from '../process/exec';
-import { assertJavaArguments } from '../process/java-arguments';
+import { assertJavaArguments, JavaArgumentEncodingError } from '../process/java-arguments';
 import { buildClasspath } from '../core/classpath';
 import type { BuildPlan, CommandSpec, MavenProject, PreparedProject, RunConfig } from '../core/types';
 
@@ -89,7 +89,7 @@ async function executeMaven(spec: CommandSpec): Promise<void> {
       await assertJavaArguments(java, [`-Dmaven.multiModuleProjectDirectory=${absoluteBase}`], execution.cwd);
       env = { MAVEN_BASEDIR: absoluteBase };
     } catch (error) {
-      if (!(error instanceof Error) || !error.message.includes('无法完整表示')) throw error;
+      if (!(error instanceof JavaArgumentEncodingError)) throw error;
       await assertJavaArguments(java, [`-Dmaven.multiModuleProjectDirectory=${base}`], execution.cwd);
       // 初始化先用可表示的相对根，Maven CLI 再从 Unicode 子环境还原模型中的绝对根
       env = { MAVEN_BASEDIR: base, JAVA_RUN_MAVEN_BASE_DIRECTORY: absoluteBase };
@@ -138,7 +138,7 @@ export function planMaven(config: RunConfig, workspace: string): BuildPlan {
   return {
     tool: 'maven', commands,
     notes: [config.module && config.build === 'auto' ? '自动准备使用 Maven install，仅写本地仓库，不执行 deploy' : '构建与依赖模型由 Maven 处理',
-      '仅解析选定项目，不合并其他模块的类路径；不复用 java-run 的历史依赖缓存'],
+      '仅解析选定项目，不合并其他模块的类路径'],
   };
 }
 

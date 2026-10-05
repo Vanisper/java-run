@@ -7,7 +7,7 @@ import { buildClasspath, createManifest } from '../src/core/classpath';
 import { discoverMainClass, hasMainMethod } from '../src/core/main-class';
 import { createLaunchCommand } from '../src/core/launch';
 import { runCommand } from '../src/process/exec';
-import { assertJavaArguments } from '../src/process/java-arguments';
+import { assertJavaArguments, JavaArgumentEncodingError } from '../src/process/java-arguments';
 import { parseArgs } from '../src/cli/args';
 import { detectBuildTool } from '../src/build-tools/detect';
 import { planMaven, readEffectiveProject } from '../src/build-tools/maven';
@@ -33,7 +33,7 @@ async function acceptsJavaArguments(args: string[], cwd: string): Promise<boolea
     await assertJavaArguments('java', args, cwd);
     return true;
   } catch (error) {
-    if (error instanceof Error && error.message.includes('无法完整表示')) return false;
+    if (error instanceof JavaArgumentEncodingError) return false;
     throw error;
   }
 }
@@ -113,7 +113,7 @@ describe('主类选择', () => {
     // 源文件名保持 ASCII，避免 macOS / JDK 17 的 NFC 转换影响 public 类与文件名匹配
     const classes = compile(directory, 'UnicodeEntry', `class ${name} { public static void main(String[] args) { System.out.print("UNICODE_MAIN_OK"); } }`);
     const config = parseArgs(['--cwd', directory, `--main=${name}`]);
-    expect(discoverMainClass([classes])).toBe(name);
+    expect(await discoverMainClass([classes])).toBe(name);
     const project = { directory, classesDirectories: [classes], classpath: [classes], jvmArgs: [] };
     if (await acceptsJavaArguments([name], directory)) {
       const launch = await createLaunchCommand(config, project, directory);
@@ -126,19 +126,44 @@ describe('主类选择', () => {
     }
     expect(() => parseArgs(['--main=Invalid³'])).toThrow('Java 类全名');
   }, 20000);
-  test('通过 class 方法表发现唯一入口，注释与非 public/static 方法不会被当成入口', () => {
+  test('通过 class 方法表发现唯一入口，注释与非 public/static 方法不会被当成入口', async () => {
     const directory = temporary();
     const classes = compile(directory, 'Entry', 'public class Entry { private static void main(int x) {} public static void main(String[] args) {} }');
     compile(directory, 'Other', 'public class Other { public void main(String[] args) {} }');
-    expect(discoverMainClass([classes])).toBe('Entry');
+    expect(await discoverMainClass([classes])).toBe('Entry');
     expect(hasMainMethod(readFileSync(join(classes, 'Other.class')))).toBe(false);
     expect(hasMainMethod(Buffer.from('invalid'))).toBe(false);
   }, 20000);
-  test('多个主类要求明确选择并列出候选', () => {
+  test('多个主类要求明确选择并列出候选', async () => {
     const directory = temporary();
     const classes = compile(directory, 'First', 'public class First { public static void main(String[] args) {} }');
     compile(directory, 'Second', 'public class Second { public static void main(String[] args) {} }');
-    expect(() => discoverMainClass([classes])).toThrow('First\n  Second');
+    await expect(discoverMainClass([classes])).rejects.toThrow('First\n  Second');
+  }, 20000);
+
+  test('只有未声明的多个入口调用选择器，显式主类优先于项目声明', async () => {
+    const directory = temporary();
+    const classes = compile(directory, 'First', 'public class First { public static void main(String[] args) { System.out.print("FIRST"); } }');
+    let selectionCount = 0;
+    const selector = async (candidates: readonly string[]) => {
+      selectionCount++;
+      expect(candidates).toEqual(['First', 'Second']);
+      return 'Second';
+    };
+    expect(await discoverMainClass([classes], selector)).toBe('First');
+    expect(selectionCount).toBe(0);
+    compile(directory, 'Second', 'public class Second { public static void main(String[] args) { System.out.print("SECOND"); } }');
+    const project = { directory, classesDirectories: [classes], classpath: [classes], jvmArgs: [], mainClass: 'First' };
+    const declared = await createLaunchCommand(parseArgs(['--cwd', directory]), project, directory, selector);
+    expect((await runCommand(declared, { capture: true })).stdout).toBe('FIRST');
+    const explicit = await createLaunchCommand(parseArgs(['--cwd', directory, '--main=Second']), project, directory, selector);
+    expect((await runCommand(explicit, { capture: true })).stdout).toBe('SECOND');
+    expect(selectionCount).toBe(0);
+    const selected = await createLaunchCommand(parseArgs(['--cwd', directory]), { ...project, mainClass: undefined }, directory, selector);
+    expect((await runCommand(selected, { capture: true })).stdout).toBe('SECOND');
+    expect(selectionCount).toBe(1);
+    const cancellation = new Error('selection-cancelled');
+    await expect(discoverMainClass([classes], () => Promise.reject(cancellation))).rejects.toBe(cancellation);
   }, 20000);
 });
 

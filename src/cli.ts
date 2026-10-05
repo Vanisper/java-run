@@ -38,7 +38,10 @@ export async function main(argv: string[]): Promise<number> {
       }
     }
     const project = tool === 'maven' ? await prepareMaven(config, workspace) : await prepareGradle(config, workspace);
-    const launch = await createLaunchCommand(config, project, workspace);
+    const selectMainClass = process.stdin.isTTY && process.stderr.isTTY
+      ? (candidates: readonly string[]) => chooseCandidate(candidates.map(value => ({ value, label: value })), '选择启动主类')
+      : undefined;
+    const launch = await createLaunchCommand(config, project, workspace, selectMainClass);
     console.error(`java-run：运行 ${launch.args[launch.args.indexOf('-classpath') + 2]}（${tool}）`);
     return (await runCommand(launch)).exitCode;
   } catch (error) {
