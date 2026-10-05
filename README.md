@@ -2,8 +2,6 @@
 
 java-run 为 Maven 和 Gradle 源码工作区提供统一的开发启动入口：选择一个 Java 项目，由构建工具准备源码和运行依赖，再启动独立的 Java 进程。普通 Java、Spring Boot 和其他基于 classpath 的应用使用同一套运行契约。
 
-**发布状态：本文描述的命令契约尚未正式发布，请从源码构建。**
-
 ## 快速开始
 
 从源码使用需要 [Bun](https://bun.sh) **1.4.2**，版本固定在 `.bun-version`；运行 Java 项目还需要符合该项目要求的 JDK，以及 Maven / Gradle 或项目 Wrapper。JDK 的 `java` 和 `jar` 必须可用。
@@ -178,5 +176,3 @@ Windows 上的 Maven 配置根超出系统代码页时，需要 Maven **3.9.2 �
 | [技术路线](docs/roadmap.md) | 已有工程能力、支持缺口和后续工作的验收条件 |
 | [参与开发](CONTRIBUTING.md) | 本地开发、验证、分支协作与发布流程 |
 | [验收夹具](tests/fixtures/README.md) | 真实项目场景、隔离方式和验证覆盖 |
-
-仓库尚未确定开源许可证，正式发布前需要补齐许可证与发布条件。
