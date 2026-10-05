@@ -25,6 +25,32 @@
 - 原生操作系统 CI 运行本机二进制；本地未运行的系统不宣称已经验证
 - 用户 java-template 在隔离副本补充验证，不修改原仓库
 
-## 状态
+## 实施结果
 
-实施中。完成后记录实际测试结果、提交边界和仍需原生平台验证的限制。
+2026-10-05 已完成运行契约与核心重构、两种构建适配器、配置与交互、真实项目夹具、原生 CI 和发布门禁、README 及迁移说明。源码按职责组织为 `cli`、`build-tools`、`core`、`process`，根目录保留 CLI 入口。旧入口、静态叶子模块并集和独立 classpath 缓存已经移除。
+
+本轮本地环境为 macOS ARM64、Bun 1.4.2、Maven 3.9.16、Corretto JDK 21。Windows 专用用例在本地跳过，不能把已配置 CI 当成远端已经通过。
+
+| 检查 | 实际结果 |
+| --- | --- |
+| 锁文件安装与严格类型检查 | 通过 |
+| 核心回归 | 85 项通过、2 项 Windows 专用测试跳过，无失败 |
+| Gradle 适配 | 8.14 / Java 21 与 9.7 / Java 26 的真实项目验证通过；buildSrc 与 included build 回归均通过 |
+| 独立二进制完整 smoke | 同一次 20 项全部通过，82.2 秒；使用 JDK 21、Gradle 8.14 和独立测试缓存 |
+| 目录整理后的二进制复验 | 重新类型检查、编译，7 项 quick smoke 全部通过 |
+| 原生终端交互 | Maven 与 Gradle 实际列出模型候选，选择目标后正常运行；Maven 目标存在多个 main 时，选择另一入口并成功运行 |
+| 用户 java-template | 隔离副本成功启动 AdminApplication，SIGTERM 返回 143，并执行应用关闭钩子 |
+
+完整 smoke 覆盖 Maven 单项目和 reactor、普通 main 与 Boot main、测试作用域隔离、资源与依赖变更、配置默认值与 CLI 合并、非零退出和 Gradle 项目依赖。候选发现验证了不读取可能触发任务依赖的主类 Provider，也不编译无关应用。主类与 Manifest 使用真实 JDK 验证，包括空依赖、特殊路径和 Unicode 标识符。
+
+`java-template` 固定在提交 `f7e463d85e3e527fae974130fb12939523c40ac4` 的归档副本，使用其 Gradle 8.14 Wrapper / Java 21 toolchain，目标为 `:apps:admin-server`，入口为 `cn.xxb.admin.AdminApplication`。验证用随机 Web 端口、H2 内存库和 create-drop，避免读写原仓库的数据文件；启动耗时约 214 秒，应用自身报告启动约 3.4 秒，其余主要为首次构建准备。应用启动后发送 SIGTERM，确认 JVM、Wrapper 与一次性 Gradle daemon 均已结束，原仓库保持干净。本次仅确认应用启动及关闭，不代替业务接口验收。
+
+独立审查额外确认了无依赖 Maven 项目可以正常运行，并发现原主类正则拒绝组合字符标识符的问题；已统一校验器并用 javac / java 回归。实际模板验证发现 Gradle init script 会进入 buildSrc，已用主构建规范路径限定修复，并用约定插件及复合构建验证。
+
+## 分支与发布边界
+
+全部工作留在 `feat/open-source-cli`，`master` 保留原代码基线。提交分别记录评估、产品定位、核心重构、验收与发布流程、用户文档；本次没有推送、合并主分支、创建 tag 或发布版本。
+
+核心实现提交为 `95f1b5f`，验收与 CI 提交为 `3005f8c`。评估与初始定位分别记录在 `4ba5822`、`40e87cf`，最终文档以本记录及 README 为准。
+
+包版本仍为旧 `0.0.5`，README 明确当前契约尚未发布。下一步正式发布前需确定开源许可证与版本号，实际运行三种原生系统的 CI，并据结果确认支持矩阵。性能、命名运行配置和新增运行模式按 [后续技术路线](product-design.md#后续技术路线) 推进，不以未运行的计划代替验证。

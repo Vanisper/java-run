@@ -6,6 +6,9 @@
 
 建议继续投入，先以 Maven / Spring Boot 开发启动为明确范围。短期修复可复现问题；中期以启动模块为中心，让 Maven 负责模型与依赖裁决；随后用真实项目夹具和原生操作系统测试支撑支持范围。性能优化应在正确性基线建立后进行。
 
+
+> 本文评估重构前的固定代码基线。用户随后允许重新定位并加入 Gradle，本次实施改为框架中立的源码工作区运行器；最终契约见 [产品设计](product-design.md)，结果见 [实施记录](implementation-plan.md)。以下源码链接均指向原始基线。
+
 ## 评估范围与证据
 
 本次阅读了全部 8 个 TypeScript 源文件、README、配置、构建脚本、发布工作流及本地可见的 17 个提交。在隔离副本安装锁定依赖，执行类型检查、本机编译及针对性探针；查阅 Maven、Java、Spring Boot、Bun 和 Exec Maven Plugin 官方资料。
@@ -42,7 +45,7 @@ flowchart TD
 | 长类路径 | 使用 Manifest 和 `cp.jar` | 方向可保留，路径编码存在已复现问题 |
 | 分发 | 本机编译，tag 触发五种 OS / 架构产物构建与 Release | 构建目标已有覆盖，目标系统运行尚无验证门禁 |
 
-源码入口：[主流程](../src/cli.ts)、[模块发现](../src/find-maven-modules.ts)、[类路径构建](../src/classpath-builder.ts)、[发布流程](../.github/workflows/release.yaml)。
+源码入口：[主流程](https://github.com/Vanisper/java-run/blob/000c23bc2f11ad80224c179cd12e1757a5b5c09b/src/cli.ts)、[模块发现](https://github.com/Vanisper/java-run/blob/000c23bc2f11ad80224c179cd12e1757a5b5c09b/src/find-maven-modules.ts)、[类路径构建](https://github.com/Vanisper/java-run/blob/000c23bc2f11ad80224c179cd12e1757a5b5c09b/src/classpath-builder.ts)、[发布流程](https://github.com/Vanisper/java-run/blob/000c23bc2f11ad80224c179cd12e1757a5b5c09b/.github/workflows/release.yaml)。
 
 以下语义需要在文档中明确：`active=` 是 Spring profile，不是 Maven `-P`；`no-run` 仍解析依赖并写缓存、生成 Jar，不是无副作用的 dry-run；`-c` 只执行 `mvn compile`，不能据此保证后续逐模块解析能找到未安装的兄弟模块产物。
 
@@ -50,7 +53,7 @@ flowchart TD
 
 ### Java 正常退出后被 CLI 判为失败
 
-**已复现，稳定版本的阻断项。** [exec.ts](../src/exec.ts) 第 16 行在 `stdout` 不是 Buffer 时直接调用 `.trim()`；[cli.ts](../src/cli.ts) 第 80 行使用 `stdio: 'inherit'`，此时成功结束的子进程没有可捕获的 stdout。
+**已复现，稳定版本的阻断项。** [exec.ts](https://github.com/Vanisper/java-run/blob/000c23bc2f11ad80224c179cd12e1757a5b5c09b/src/exec.ts) 第 16 行在 `stdout` 不是 Buffer 时直接调用 `.trim()`；[cli.ts](https://github.com/Vanisper/java-run/blob/000c23bc2f11ad80224c179cd12e1757a5b5c09b/src/cli.ts) 第 80 行使用 `stdio: 'inherit'`，此时成功结束的子进程没有可捕获的 stdout。
 
 本地调用 `executeCommand('java', ['-version'], { stdio: 'inherit' })` 后，Java 正常退出，CLI 却因 `null.trim()` 抛错并返回 1。相同执行路径用于应用运行，因此应用正常关闭后也可能被报告为失败。这不表示 Java 一定无法启动。
 
@@ -58,25 +61,25 @@ flowchart TD
 
 ### Manifest 路径编码会导致类加载失败
 
-**已复现，稳定版本的阻断项。** [cli.ts](../src/cli.ts) 第 115 行直接将路径拼为 `file://...`，没有 URL 编码。使用同样的 Manifest 生成逻辑、真实 `javac` / `jar` / `java` 验证，普通目录可运行；目录含空格或 `#` 时出现 `ClassNotFoundException`。
+**已复现，稳定版本的阻断项。** [cli.ts](https://github.com/Vanisper/java-run/blob/000c23bc2f11ad80224c179cd12e1757a5b5c09b/src/cli.ts) 第 115 行直接将路径拼为 `file://...`，没有 URL 编码。使用同样的 Manifest 生成逻辑、真实 `javac` / `jar` / `java` 验证，普通目录可运行；目录含空格或 `#` 时出现 `ClassNotFoundException`。
 
 建议使用标准路径到 URL 的转换，保持目录 URL 的尾部斜杠，并验证最终 Jar。Manifest 的行长限制按 UTF-8 字节计算；当前按字符串字符切行值得修正，但 `jar` 可能重新折行，本次中文目录样例成功，不能据源码直接断言中文必然失败。Windows 盘符及 UNC 路径仍需原生测试。[JAR 规范](https://docs.oracle.com/en/java/javase/21/docs/specs/jar/jar.html)、[pathToFileURL](https://nodejs.org/api/url.html#urlpathtofileurlpath-options)
 
 ### 测试类路径开关没有生效
 
-**测试目录问题已复现，依赖作用域问题由源码和官方文档确认。** [classpath-builder.ts](../src/classpath-builder.ts) 第 21、31 行无条件枚举 `classes` 与 `test-classes`，没有读取 `includeTests`；调用方传入 `false` 仍会包含测试输出。
+**测试目录问题已复现，依赖作用域问题由源码和官方文档确认。** [classpath-builder.ts](https://github.com/Vanisper/java-run/blob/000c23bc2f11ad80224c179cd12e1757a5b5c09b/src/classpath-builder.ts) 第 21、31 行无条件枚举 `classes` 与 `test-classes`，没有读取 `includeTests`；调用方传入 `false` 仍会包含测试输出。
 
 第 79 行的 Maven 调用没有指定依赖作用域。`dependency:build-classpath` 默认包含所有依赖；普通运行时通常应使用 `-DincludeScope=runtime`。第 82 行的注释参数 `-Dmdep.includeScope=compile,runtime` 不能直接取消注释作为修复。测试输出目录和测试依赖需要同时控制，具体 Boot 开发启动语义则应遵循选定后端的契约。[插件参数](https://maven.apache.org/plugins/maven-dependency-plugin/build-classpath-mojo.html)
 
 ### 缓存可能持续返回旧依赖
 
-**已复现。** [classpath-builder.ts](../src/classpath-builder.ts) 第 69 行只检查缓存文件及模块 `target` 是否存在。探针将 POM 中依赖从 v1 改为 v2，第二次仍读取 v1，模拟 Maven 的调用次数没有增加；强制刷新才得到 v2。
+**已复现。** [classpath-builder.ts](https://github.com/Vanisper/java-run/blob/000c23bc2f11ad80224c179cd12e1757a5b5c09b/src/classpath-builder.ts) 第 69 行只检查缓存文件及模块 `target` 是否存在。探针将 POM 中依赖从 v1 改为 v2，第二次仍读取 v1，模拟 Maven 的调用次数没有增加；强制刷新才得到 v2。
 
 建议第一步采用保守失效或默认重新解析，先保证结果正确。恢复缓存时，至少区分目标模块、相关 POM / 父模型、Maven profiles、属性、scope、工具链与缓存格式版本，检查引用文件存在性。外部父模型、SNAPSHOT 和 settings 变化需要额外策略；不能承诺一个根 POM 哈希解决全部问题。缓存写入应原子化，失败结果不得覆盖有效记录。
 
 ### 原始 XML 与 Maven 有效模型存在差距
 
-**多项边界已复现。** [find-maven-modules.ts](../src/find-maven-modules.ts) 第 29 行只读顶层 modules，第 32 行直接读版本文本，第 52 行固定追加 `pom.xml`。探针结果包括：
+**多项边界已复现。** [find-maven-modules.ts](https://github.com/Vanisper/java-run/blob/000c23bc2f11ad80224c179cd12e1757a5b5c09b/src/find-maven-modules.ts) 第 29 行只读顶层 modules，第 32 行直接读版本文本，第 52 行固定追加 `pom.xml`。探针结果包括：
 
 - 默认激活 profile 内的模块未被发现，聚合根被当成叶子
 - `${revision}` 没有展开，随后参与模块 Jar 排除时匹配失败
@@ -89,7 +92,7 @@ flowchart TD
 
 ### 所有叶子模块的并集不能代表一个应用
 
-**行为由源码确认，冲突后果属于风险推断。** [cli.ts](../src/cli.ts) 第 97 行获取全部叶子模块，[classpath-builder.ts](../src/classpath-builder.ts) 第 29、43、108 行合并所有输出与依赖，只按路径去重。
+**行为由源码确认，冲突后果属于风险推断。** [cli.ts](https://github.com/Vanisper/java-run/blob/000c23bc2f11ad80224c179cd12e1757a5b5c09b/src/cli.ts) 第 97 行获取全部叶子模块，[classpath-builder.ts](https://github.com/Vanisper/java-run/blob/000c23bc2f11ad80224c179cd12e1757a5b5c09b/src/classpath-builder.ts) 第 29、43、108 行合并所有输出与依赖，只按路径去重。
 
 例如仓库包含 `app-a` 与 `app-b`，分别依赖某库的 v1 和 v2，启动 `app-a` 时也可能带入 `app-b` 的目录及 v2。两个不同 Jar 路径不会被 Set 去掉；重复类和配置资源的加载顺序可能受到无关模块影响。本次未运行这一完整框架冲突场景。
 
@@ -107,7 +110,7 @@ Maven 的版本裁决以当前项目的依赖图为依据。因此，通用化�
 | 错误输出丢失 | executor 主要输出 `result.error`；stderr 被注释，依赖失败主要拼 stdout | 保留命令阶段、cwd、退出码、stderr，并区分找不到程序与命令执行失败 |
 | 导入即写缓存目录 | classpath 模块顶层执行 `mkdirSync` | 将文件写入移动到显式执行阶段，让帮助和参数验证可以独立运行 |
 
-依据：[参数解析](../src/parse-argvs.ts) 第 17 至 23 行、[类路径构建](../src/classpath-builder.ts) 第 16、89、108 行、[执行器](../src/exec.ts) 第 9 至 16 行。
+依据：[参数解析](https://github.com/Vanisper/java-run/blob/000c23bc2f11ad80224c179cd12e1757a5b5c09b/src/parse-argvs.ts) 第 17 至 23 行、[类路径构建](https://github.com/Vanisper/java-run/blob/000c23bc2f11ad80224c179cd12e1757a5b5c09b/src/classpath-builder.ts) 第 16、89、108 行、[执行器](https://github.com/Vanisper/java-run/blob/000c23bc2f11ad80224c179cd12e1757a5b5c09b/src/exec.ts) 第 9 至 16 行。
 
 ## 工程能力评价
 
@@ -127,7 +130,7 @@ Maven 的版本裁决以当前项目的依赖图为依据。因此，通用化�
 
 当前源码约 493 行，保持简单是优点。改进不需要 DI 框架、插件市场或多层服务架构；明确运行配置、启动计划和进程执行三个边界即可显著降低维护成本。
 
-发布流程还存在具体改进点：[release.yaml](../.github/workflows/release.yaml) 第 24 行取全仓库最高版本 tag，而非本次触发 tag，重跑旧 tag 可能产生错误版本名或日志范围；第 76 行附近把提交文本直接插入 shell，应改为可靠的数据传递或标准发布说明机制。现有工作流只在 tag 触发，未包含 PR 类型检查、测试或目标系统运行检查。
+发布流程还存在具体改进点：[release.yaml](https://github.com/Vanisper/java-run/blob/000c23bc2f11ad80224c179cd12e1757a5b5c09b/.github/workflows/release.yaml) 第 24 行取全仓库最高版本 tag，而非本次触发 tag，重跑旧 tag 可能产生错误版本名或日志范围；第 76 行附近把提交文本直接插入 shell，应改为可靠的数据传递或标准发布说明机制。现有工作流只在 tag 触发，未包含 PR 类型检查、测试或目标系统运行检查。
 
 已提交 `bun.lockb` 是可复现性的基础，本次 frozen 安装成功。仍应固定 Bun 版本，并让 CI 显式执行锁文件安装、类型检查和测试；仅保留 strict 配置无法覆盖进程输出等运行时契约。
 
