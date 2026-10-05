@@ -24,8 +24,10 @@ bun run smoke
 | `bun run typecheck` | TypeScript 类型检查 |
 | `bun test` | 参数、配置、适配器、主类、类路径、交互和进程行为回归 |
 | `bun run check` | 类型检查与回归测试 |
-| `bun run compile` | 构建本机二进制到 `dist` |
+| `bun run compile` | 构建压缩后的本机二进制到 `dist`，与发布产物使用同一入口 |
 | `bun run smoke` | 使用该二进制运行真实 Maven / Gradle 夹具 |
+
+编译入口支持等号形式的 `--target=<目标>` 和 `--outfile=<路径>`，可用目标与发布平台表一致。默认产物为 `dist/java-run`，Windows 自动使用 `.exe` 扩展名。二进制不自动加载运行目录中的 `.env` 或 `bunfig.toml`，显式继承的环境变量仍然生效。
 
 回归测试中的真实 Gradle 用例使用 PATH 中的 Gradle；找不到时会跳过，不能据此判断 Gradle 适配已经通过验收。可通过 `JAVA_RUN_TEST_GRADLE` 指定测试命令，通过 `GRADLE_USER_HOME` 隔离测试用的 Gradle 缓存：
 
@@ -96,17 +98,51 @@ docs: 说明参数传递规则
 
 [Check 工作流](.github/workflows/check.yaml) 在分支 push、PR 和复用调用时运行。Linux、macOS、Windows 与 JDK 17 / 21 组成原生矩阵，各环境执行锁文件安装、类型检查、回归测试、本机二进制编译和完整 smoke。最新结果可在 [GitHub Actions](https://github.com/Vanisper/java-run/actions/workflows/check.yaml) 查看。
 
-[Release 工作流](.github/workflows/release.yaml) 由 `v*` tag 触发，在同一标签提交上先执行 Check，再交叉编译以下产物：
+[Release 工作流](.github/workflows/release.yaml) 提供发布产物演练与标签发布两种入口，使用同一组构建和验收步骤。
 
-| 产物 | 编译目标 |
-| --- | --- |
-| Windows x64 baseline | `bun-windows-x64-baseline` |
-| Linux x64 baseline | `bun-linux-x64-baseline` |
-| Linux arm64 | `bun-linux-arm64` |
-| macOS arm64 | `bun-darwin-arm64` |
-| macOS x64 | `bun-darwin-x64` |
+### 产物构建与验收
 
-工作流汇总产物后生成并核对 `SHA256SUMS`，发布到触发事件对应的标签。交叉编译证明产物可以构建；原生矩阵证明相应运行环境可以执行，二者不能替代。矩阵没有逐一覆盖五种产物架构。
+五种产物在对应系统和体系结构的固定原生 runner 上构建：
+
+| 产物 | 编译目标 | 原生 runner |
+| --- | --- | --- |
+| Windows x64 baseline | `bun-windows-x64-baseline` | `windows-2025` |
+| Linux x64 baseline | `bun-linux-x64-baseline` | `ubuntu-24.04` |
+| Linux arm64 | `bun-linux-arm64` | `ubuntu-24.04-arm` |
+| macOS arm64 | `bun-darwin-arm64` | `macos-15` |
+| macOS x64 | `bun-darwin-x64` | `macos-15-intel` |
+
+每个任务使用 `bun run compile` 生成一次待分发的压缩二进制，先在 JDK 21 下执行完整 smoke，再切换到 JDK 17，对同一文件执行 quick 启动验收。验收通过后上传该文件，不重新构建。产物名称保留 x64 的 `baseline` 后缀；平台清单和文件名由 [发布脚本](scripts/release.ts) 统一生成。
+
+汇总步骤要求恰好包含这五种非空普通文件，拒绝缺失、多余或无效产物，然后生成并核对 `SHA256SUMS`。源码 Check 的双 JDK 完整回归与发布文件的 JDK 21 full / JDK 17 quick 范围分别声明，不能将 quick 扩大为完整验收。
+
+### 发布流程演练
+
+分支 push 修改发布或检查工作流、编译 / 发布 / smoke 脚本、对应测试、包与版本配置等路径时，会触发五平台构建、原生验收和校验和汇总。完整路径条件以 Release 工作流的 `paths` 为准。分支演练只保存 Actions artifacts，不创建标签或 GitHub Release；日常 Check 独立运行，Release 不重复调用它。
+
+`workflow_dispatch` 也是纯演练入口，并额外复用完整 Check。工作流进入默认分支后，可通过 Actions 页面或 GitHub CLI 手动选择分支运行。演练使用所选提交的包版本生成文件名，不代表该版本已经发布。
+
+本地可先检查版本和平台清单：
+
+```sh
+bun scripts/release.ts metadata
+```
+
+### 标签发布与重试
+
+任何 `v*` 标签 push 都进入发布校验，不受分支演练的路径条件限制。包版本必须是合法 SemVer，标签必须严格等于 `v<package.json 版本>`，且仓库需包含非空许可证文件。已经公开的标签版本会被拒绝，不能通过重跑覆盖。
+
+元数据校验通过后，同一标签提交的六组 Check 与五平台产物验收并行执行。只有源码检查、产物验收和汇总全部成功，才创建或恢复该标签的未公开草稿，上传五份文件和校验和。公开前还会核对远端资产集合，缺失或额外文件均令流程失败并保留草稿；文件上传与核对全部成功后自动公开。草稿用于承接上传过程和失败重试，不需要额外人工审批。
+
+SemVer 包含预发布段的版本自动标记为 prerelease，且不会标记为 latest；稳定版的 latest 选择交给 GitHub 默认规则。同一标签的运行串行执行，不中断正在进行的发布。
+
+网络、下载或上传偶发失败时，可以重跑失败任务：
+
+```sh
+gh run rerun <run-id> --failed
+```
+
+重跑仍使用原始提交和 ref。已验收的 Actions artifacts 支持同名覆盖，Release 资产只在未公开草稿中允许替换。若修改了代码，需要运行新提交的验收；若版本已经公开，需要使用新版本，不能重跑发布来替换文件。
 
 发布准备包括：
 
@@ -114,4 +150,4 @@ docs: 说明参数传递规则
 - 为源码接口确定版本号，更新 `package.json` 并核对版本输出
 - 完成待发布提交的检查，审查平台产物和支持边界
 
-发布时应确保 `v<版本>` 标签与包版本一致，再推送标签触发工作流；`bun run version` 提供 bumpp 版本调整入口。发布完成后检查 Release 的标签、产物和校验和，并更新安装说明。
+`bun run version` 使用 bumpp 调整 `package.json`，不自动提交、创建标签或推送。版本变更通过 PR 合入主分支后，再创建与包版本一致的标签并推送该标签，触发自动发布。发布完成后检查 Release 的标签、产物和校验和，并更新安装说明。

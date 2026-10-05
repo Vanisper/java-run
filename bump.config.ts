@@ -1,5 +1,8 @@
-import { defineConfig } from "bumpp"
+import { defineConfig } from 'bumpp';
 
 export default defineConfig({
-  all: true,
-})
+  files: ['package.json'],
+  commit: false,
+  tag: false,
+  push: false,
+});

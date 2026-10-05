@@ -6,7 +6,7 @@
   "scripts": {
     "version": "bumpp",
     "start": "bun run ./src/cli.ts",
-    "compile": "bun build ./src/cli.ts --compile --outfile=dist/java-run",
+    "compile": "bun run scripts/compile.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "check": "bun run typecheck && bun test",

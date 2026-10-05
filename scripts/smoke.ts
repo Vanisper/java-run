@@ -25,6 +25,7 @@ interface ProcessResult {
 interface Expectations {
   code?: number;
   stdout?: string[];
+  stdoutExact?: string;
   stderr?: string[];
   absent?: string[];
 }
@@ -164,6 +165,9 @@ async function main(): Promise<void> {
       const violations: string[] = [];
       if (result.timedOut) violations.push('执行超时');
       if (result.code !== (expected.code ?? 0)) violations.push(`退出码应为 ${expected.code ?? 0}，实际为 ${result.code} (${result.signal ?? 'no signal'})`);
+      if (expected.stdoutExact !== undefined && result.stdout !== expected.stdoutExact) {
+        violations.push(`stdout 应为 ${JSON.stringify(expected.stdoutExact)}，实际为 ${JSON.stringify(result.stdout)}`);
+      }
       for (const marker of expected.stdout ?? []) {
         if (!result.stdout.includes(marker)) violations.push(`缺少 stdout 标记: ${marker}`);
       }
@@ -199,7 +203,7 @@ async function main(): Promise<void> {
 
     await check('help', ['help'], { stdout: ['java-run'] });
     const packageVersion = (JSON.parse(await readFile(path.join(projectRoot, 'package.json'), 'utf8')) as { version: string }).version;
-    await check('version', ['version'], { stdout: [packageVersion] });
+    await check('version', ['version'], { stdoutExact: `java-run ${packageVersion}\n` });
     const previewFixture = options.fixture ?? 'boot-reactor';
     const previewArgs = argumentsFor(previewFixture, ...(['boot-reactor', 'gradle-reactor'].includes(previewFixture) ? ['--module=app'] : []))
       .filter(arg => !arg.startsWith('--build-command='));
