@@ -114,7 +114,7 @@ docs: 说明参数传递规则
 
 每个任务使用 `bun run compile` 生成一次待分发的压缩二进制，在 JDK 21 下执行完整 smoke。随后将该文件打包，不重新构建：Linux / macOS 使用 `zip`，Windows 使用 PowerShell `Compress-Archive`。实际 ZIP 会在原生环境中解压，核对其中二进制与已验收文件的字节一致，再使用 JDK 17 对解压出的文件执行 quick 启动验收。
 
-每份 ZIP 包含一个 `java-run-<平台>/` 目录，目录内为固定名称的 `java-run` 或 `java-run.exe`、从 [安装指南](docs/installation.md) 复制的 `INSTALL.md`，以及存在的许可证文件。平台清单、包内目录和公开资产名称由 [发布脚本](scripts/release.ts) 统一生成。公开名称不带版本号，版本由 `/releases/download/v<版本>/` URL 表达；`/releases/latest/download/` 提供最新稳定版的固定下载入口。
+每份 ZIP 包含一个 `java-run-<平台>/` 目录，目录内为固定名称的 `java-run` 或 `java-run.exe`、从 [安装指南](docs/installation.md) 复制的 `INSTALL.md`，以及存在的许可证文件。编译参数、发布矩阵、包内目录和公开资产名称共用 [平台清单](scripts/platforms.ts)。公开名称不带版本号，版本由 `/releases/download/v<版本>/` URL 表达；`/releases/latest/download/` 提供最新稳定版的固定下载入口。
 
 汇总步骤要求恰好包含上述五种非空 ZIP，拒绝缺失、多余或无效产物，然后生成并核对覆盖五个 ZIP 的 `SHA256SUMS`。源码 Check 的双 JDK 完整回归与发布文件的 JDK 21 full / JDK 17 quick 范围分别声明，不能将 quick 扩大为完整验收。Linux 验收采用 Ubuntu 24.04 的 glibc 环境，不代表 musl 或其他系统版本已通过验收。
 

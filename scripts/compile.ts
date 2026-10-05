@@ -1,18 +1,12 @@
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { platforms, type BuildTarget } from './platforms';
 
 const projectRoot = resolve(import.meta.dir, '..');
-const targets = [
-  'bun-windows-x64',
-  'bun-linux-x64',
-  'bun-linux-arm64',
-  'bun-darwin-arm64',
-  'bun-darwin-x64',
-] as const;
 
 /** 本机或指定平台的独立二进制构建配置 */
 export interface CompileOptions {
-  target?: typeof targets[number];
+  target?: BuildTarget;
   outfile: string;
 }
 
@@ -33,8 +27,9 @@ export function parseCompileOptions(argv: readonly string[], cwd = projectRoot):
     const value = separator < 0 ? '' : argument.slice(separator + 1);
     if (!value.trim() || /[\r\n\0]/.test(value)) throw new Error(`${name} 必须使用 ${name}=<value> 指定有效值`);
     if (name === '--target') {
-      if (!targets.includes(value as typeof targets[number])) throw new Error(`--target 仅支持 ${targets.join('、')}`);
-      options.target = value as typeof targets[number];
+      const platform = platforms.find(platform => platform.target === value);
+      if (!platform) throw new Error(`--target 仅支持 ${platforms.map(platform => platform.target).join('、')}`);
+      options.target = platform.target;
     } else {
       options.outfile = resolve(cwd, value);
     }

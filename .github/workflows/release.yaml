@@ -10,6 +10,7 @@ on:
       - '.github/workflows/release.yaml'
       - '.github/workflows/check.yaml'
       - 'scripts/compile.ts'
+      - 'scripts/platforms.ts'
       - 'scripts/release.ts'
       - 'scripts/smoke.ts'
       - 'docs/installation.md'

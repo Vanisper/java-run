@@ -4,15 +4,9 @@ import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, rename, rm, writeFile 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { platforms, platformFor } from './platforms';
 
 const projectRoot = resolve(import.meta.dir, '..');
-const platforms = [
-  { name: 'windows-x64', runner: 'windows-2025', target: 'bun-windows-x64', binary: 'java-run.exe', label: 'Windows x64' },
-  { name: 'linux-x64', runner: 'ubuntu-24.04', target: 'bun-linux-x64', binary: 'java-run', label: 'Linux x64' },
-  { name: 'linux-arm64', runner: 'ubuntu-24.04-arm', target: 'bun-linux-arm64', binary: 'java-run', label: 'Linux ARM64' },
-  { name: 'darwin-arm64', runner: 'macos-15', target: 'bun-darwin-arm64', binary: 'java-run', label: 'macOS Apple Silicon' },
-  { name: 'darwin-x64', runner: 'macos-15-intel', target: 'bun-darwin-x64', binary: 'java-run', label: 'macOS Intel' },
-] as const;
 const licenseNames = ['LICENSE', 'LICENSE.md', 'LICENSE.txt'];
 const repository = 'https://github.com/Vanisper/java-run';
 
@@ -38,16 +32,16 @@ export function releaseMetadata(version: string, requestedTag?: string): Release
     version, tag, prerelease: match[4] !== undefined,
     matrix: { include: platforms.map(platform => ({
       name: platform.name, runner: platform.runner, target: platform.target,
-      binary: platform.binary, archive: `java-run-${platform.name}.zip`,
+      binary: platform.binary, archive: platform.archive,
     })) },
   };
 }
 
 /** 为当前版本生成固定下载链接、安装要求和升级说明 */
 export function releaseNotes(version: string): string {
-  const { tag, matrix } = releaseMetadata(version);
+  const { tag } = releaseMetadata(version);
   const download = `${repository}/releases/download/${encodeURIComponent(tag)}`;
-  const rows = matrix.include.map((platform, index) => `| ${platforms[index]!.label} | [${platform.archive}](${download}/${platform.archive}) |`);
+  const rows = platforms.map(platform => `| ${platform.label} | [${platform.archive}](${download}/${platform.archive}) |`);
   return `## 下载与安装
 
 下载对应系统与处理器的 ZIP 后解压，无需安装 Bun。本机需要满足 Java 项目要求的 JDK；优先使用项目的 Maven / Gradle Wrapper，没有 Wrapper 时需安装对应构建工具。
@@ -64,12 +58,6 @@ ${rows.join('\n')}
 
 升级时下载新版本的对应 ZIP，校验后用其中的可执行文件替换原文件，再执行 \`java-run --version\` 确认版本。
 `;
-}
-
-function platformFor(name: string) {
-  const platform = platforms.find(platform => platform.name === name);
-  if (!platform) throw new Error(`不支持的发布平台：${name}`);
-  return { ...platform, folder: `java-run-${platform.name}`, archive: `java-run-${platform.name}.zip` };
 }
 
 async function assertFile(path: string): Promise<void> {
