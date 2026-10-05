@@ -52,7 +52,7 @@ export async function main(argv: string[]): Promise<number> {
       return 0;
     }
     const launch = await createLaunchCommand(config, project, workspace, selectMainClass);
-    console.error(`java-run：运行 ${launch.args[launch.args.indexOf('-classpath') + 2]}（${tool}）`);
+    console.error(`java-run：运行 ${launch.mainClass}（${tool}）`);
     return (await runCommand(launch)).exitCode;
   } catch (error) {
     if (error instanceof SelectionCancelledError) { console.error('java-run：已取消选择'); return error.exitCode; }

@@ -241,6 +241,20 @@ describe('生成项目启动配置', () => {
   }, 30000);
 });
 
+describe('CLI 启动入口', () => {
+  test('前置 classpath JVM 参数不影响受控类路径或入口日志', () => {
+    const fixture = mavenFixture();
+    const result = spawnSync(process.execPath, [
+      cli, '--cwd', fixture.root, '--build-command', fixture.command,
+      '--jvm-arg=-classpath', '--jvm-arg=unused-classpath',
+    ], { encoding: 'utf8', timeout: 20000, stdio: ['pipe', 'pipe', 'pipe'] });
+    if (result.error) throw result.error;
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('java-run：运行 MavenEntry（maven）');
+    expect(existsSync(join(fixture.root, 'application-started'))).toBe(true);
+  }, 30000);
+});
+
 describe('项目配置写入保护', () => {
   test('准备期间另一进程创建配置时不覆盖，并清理暂存文件', () => {
     const root = directory();
