@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { CommandError, runCommand } from '../process/exec';
+import { assertJavaArguments } from '../process/java-arguments';
 import type { BuildPlan, CommandSpec, PreparedProject, RunConfig } from '../core/types';
 
 const projectFiles = ['settings.gradle', 'settings.gradle.kts', 'build.gradle', 'build.gradle.kts'];
@@ -52,23 +53,20 @@ function commandSpecification(config: RunConfig, workspace: string, discovery = 
     throw new Error(`找不到 Gradle settings 或 build 文件：${config.cwd}`);
   }
   validateBuildArguments(config.buildArgs);
-  const target = discovery ? ':' : targetPath(config.module);
+  if (!discovery) targetPath(config.module);
   const paths = metadataPaths(workspace);
   const task = discovery ? `${paths.task}_discover` : paths.task;
   const build = discovery ? 'none' : config.build;
   const args = [
-    '--no-daemon', '--console=plain', '--no-configuration-cache', '-I', paths.script,
+    '--no-daemon', '--console=plain', '--no-configuration-cache', '-I', relative(config.cwd, paths.script),
     ...config.buildArgs,
-    `-DjavaRun.root=${resolve(config.cwd)}`,
-    `-DjavaRun.target=${target}`,
-    `-DjavaRun.output=${discovery ? join(resolve(workspace), 'gradle-projects.json') : paths.output}`,
     `-DjavaRun.metadataTask=${task}`,
     `-DjavaRun.build=${build}`,
     `-DjavaRun.includeTests=${discovery ? false : config.includeTests}`,
     `-DjavaRun.discover=${discovery}`,
   ];
   if (build === 'none') args.push('-Porg.gradle.java.installations.auto-download=false');
-  args.push(`${target === ':' ? ':' : `${target}:`}${task}`);
+  args.push(`:${task}`);
   return { command: gradleCommand(config), args, cwd: config.cwd, stage: discovery ? 'Gradle 项目选择' : 'Gradle 项目准备' };
 }
 
@@ -82,25 +80,30 @@ export function planGradle(config: RunConfig, workspace: string): BuildPlan {
     tool: 'gradle',
     commands: [commandSpecification(config, workspace)],
     notes: [
+      `目标 Gradle 项目：${targetPath(config.module)}`,
       config.build === 'auto'
         ? 'Gradle 任务图准备目标项目和运行依赖，不执行测试'
         : '不构建源码，要求目标项目和运行依赖已有可用产物',
       '主类、运行类路径和 Java 工具链将在执行 Gradle 后解析',
+      '项目根、目标模块和输出路径由临时脚本读取 UTF-8 请求，不经 Java 原生命令行编码转换',
     ],
   };
 }
 
 const initScript = String.raw`
 import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import org.gradle.api.GradleException
 import org.gradle.api.plugins.JavaApplication
 import org.gradle.api.plugins.JavaPluginExtension
 import org.gradle.api.tasks.SourceSetContainer
 import org.gradle.jvm.toolchain.JavaToolchainService
 
+def javaRunRequest = new JsonSlurper().parseText(new String('@JAVA_RUN_REQUEST@'.decodeBase64(), 'UTF-8'))
+
 gradle.projectsEvaluated {
     // init script 也会进入辅助构建，元数据任务只注册到请求的主构建
-    def requestedRoot = new File(System.getProperty('javaRun.root')).canonicalFile
+    def requestedRoot = new File(javaRunRequest.root).canonicalFile
     if (gradle.rootProject.projectDir.canonicalFile != requestedRoot) {
         return
     }
@@ -113,14 +116,14 @@ gradle.projectsEvaluated {
                 }.sort { a, b -> a.path <=> b.path }.collect {
                     [value: it.path, label: it.path + '（入口待解析）']
                 }
-                def output = new File(System.getProperty('javaRun.output'))
+                def output = new File(javaRunRequest.output)
                 output.parentFile.mkdirs()
                 output.setText(JsonOutput.toJson(candidates), 'UTF-8')
             }
         }
         return
     }
-    def requestedPath = System.getProperty('javaRun.target')
+    def requestedPath = javaRunRequest.target
     def target = gradle.rootProject.findProject(requestedPath)
     if (target == null) {
         throw new GradleException("找不到 Gradle 项目：" + requestedPath + "，请用 --module 指定实际项目路径")
@@ -133,7 +136,7 @@ gradle.projectsEvaluated {
     def includeTests = Boolean.parseBoolean(System.getProperty('javaRun.includeTests'))
     def selected = sourceSets.getByName(includeTests ? 'test' : 'main')
     def included = includeTests ? [sourceSets.getByName('test'), sourceSets.getByName('main')] : [selected]
-    target.tasks.register(taskName) {
+    def metadataTask = target.tasks.register(taskName) {
         if (System.getProperty('javaRun.build') == 'auto') {
             dependsOn selected.classesTaskName
             dependsOn selected.runtimeClasspath.buildDependencies
@@ -155,7 +158,7 @@ gradle.projectsEvaluated {
             }
             def mainClass = application == null ? null : application.mainClass.orNull
             def jvmArgs = application == null ? [] : application.applicationDefaultJvmArgs.collect { it.toString() }
-            def output = new File(System.getProperty('javaRun.output'))
+            def output = new File(javaRunRequest.output)
             output.parentFile.mkdirs()
             output.setText(JsonOutput.toJson([
                 directory: target.projectDir.absolutePath,
@@ -167,8 +170,34 @@ gradle.projectsEvaluated {
             ]), 'UTF-8')
         }
     }
+    if (target != gradle.rootProject) {
+        // 根任务固定为 ASCII，目标模块的名称只从 UTF-8 请求读取
+        gradle.rootProject.tasks.register(taskName) {
+            dependsOn metadataTask
+        }
+    }
 }
 `.trimStart();
+
+function initializationScript(config: RunConfig, workspace: string, discovery = false): string {
+  const request = {
+    root: resolve(config.cwd),
+    target: discovery ? ':' : targetPath(config.module),
+    output: discovery ? join(resolve(workspace), 'gradle-projects.json') : metadataPaths(workspace).output,
+  };
+  const encoded = Buffer.from(JSON.stringify(request), 'utf8').toString('base64');
+  return initScript.replace('@JAVA_RUN_REQUEST@', encoded);
+}
+
+async function executeGradle(spec: CommandSpec): Promise<void> {
+  const java = process.env.JAVA_HOME
+    ? join(process.env.JAVA_HOME, 'bin', process.platform === 'win32' ? 'java.exe' : 'java')
+    : 'java';
+  await assertJavaArguments(java, spec.args, spec.cwd);
+  console.error(`java-run：${spec.stage}`);
+  const result = await runCommand(spec, { capture: true });
+  if (result.exitCode !== 0) throw new CommandError(spec, result);
+}
 
 function readProject(output: string): PreparedProject {
   let metadata: unknown;
@@ -210,12 +239,10 @@ export async function prepareGradle(config: RunConfig, workspace: string): Promi
   const plan = planGradle(config, workspace);
   const paths = metadataPaths(workspace);
   mkdirSync(resolve(workspace), { recursive: true });
-  writeFileSync(paths.script, initScript);
+  writeFileSync(paths.script, initializationScript(config, workspace));
   rmSync(paths.output, { force: true });
   const spec = plan.commands[0]!;
-  console.error(`java-run：${spec.stage}`);
-  const result = await runCommand(spec, { capture: true });
-  if (result.exitCode !== 0) throw new CommandError(spec, result);
+  await executeGradle(spec);
   return readProject(paths.output);
 }
 
@@ -229,11 +256,9 @@ export async function discoverGradleProjects(config: RunConfig, workspace: strin
   const paths = metadataPaths(workspace);
   const output = join(resolve(workspace), 'gradle-projects.json');
   mkdirSync(resolve(workspace), { recursive: true });
-  writeFileSync(paths.script, initScript);
+  writeFileSync(paths.script, initializationScript(config, workspace, true));
   rmSync(output, { force: true });
-  console.error(`java-run：${spec.stage}`);
-  const result = await runCommand(spec, { capture: true });
-  if (result.exitCode !== 0) throw new CommandError(spec, result);
+  await executeGradle(spec);
   const candidates: unknown = JSON.parse(readFileSync(output, 'utf8'));
   if (!Array.isArray(candidates) || candidates.some(candidate =>
     !candidate || typeof candidate.value !== 'string' || !candidate.value.startsWith(':') || typeof candidate.label !== 'string')) {

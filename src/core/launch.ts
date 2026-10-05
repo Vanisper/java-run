@@ -1,10 +1,11 @@
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, relative } from 'node:path';
 import { existsSync, statSync, writeFileSync } from 'node:fs';
 import { createManifest } from './classpath';
 import { discoverMainClass, findMainClasses } from './main-class';
 import { chooseCandidate } from '../cli/selection';
 import { isJavaClassName } from './java-class';
 import { CommandError, runCommand } from '../process/exec';
+import { assertJavaArguments } from '../process/java-arguments';
 import type { CommandSpec, PreparedProject, RunConfig } from './types';
 
 function resolveJar(java: string): string {
@@ -32,9 +33,11 @@ export async function createLaunchCommand(config: RunConfig, project: PreparedPr
   const java = config.javaCommand || project.javaCommand || (process.env.JAVA_HOME ? join(process.env.JAVA_HOME, 'bin', process.platform === 'win32' ? 'java.exe' : 'java') : 'java');
   const manifest = join(workspace, 'MANIFEST.MF');
   const classpathJar = join(workspace, 'classpath.jar');
+  const args = ['-Dfile.encoding=UTF-8', ...project.jvmArgs, ...config.jvmArgs, '-classpath', relative(project.directory, classpathJar), main, ...config.applicationArgs];
+  await assertJavaArguments(java, args, project.directory);
   writeFileSync(manifest, createManifest(project.classpath));
-  const spec = { command: resolveJar(java), args: ['cfm', classpathJar, manifest], cwd: workspace, stage: '生成运行类路径' };
+  const spec = { command: resolveJar(java), args: ['cfm', 'classpath.jar', 'MANIFEST.MF'], cwd: workspace, stage: '生成运行类路径' };
   const result = await runCommand(spec, { capture: true });
   if (result.exitCode !== 0) throw new CommandError(spec, result);
-  return { command: java, args: ['-Dfile.encoding=UTF-8', ...project.jvmArgs, ...config.jvmArgs, '-classpath', classpathJar, main, ...config.applicationArgs], cwd: project.directory, stage: '运行 Java 应用' };
+  return { command: java, args, cwd: project.directory, stage: '运行 Java 应用' };
 }

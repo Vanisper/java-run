@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -151,4 +151,28 @@ describe.skipIf(process.platform !== 'win32')('Windows 批处理入口', () => {
     await expect(runCommand({ command: batch, args: ['value\r\necho injected'], cwd: directory, stage: '批处理参数检查' }))
       .rejects.toMatchObject({ name: 'CommandError', exitCode: 1 });
   });
+
+  test('转发入口清理批处理及全部后代，并保留终止状态', async () => {
+    const directory = temporaryDirectory();
+    const runner = spawn(process.execPath, [processChild, 'windows-runner', directory], { stdio: 'ignore' });
+    const completed = new Promise<void>((resolve, reject) => {
+      runner.once('error', reject);
+      runner.once('exit', () => resolve());
+    });
+    let childPid: number | undefined;
+    let leafPid: number | undefined;
+    try {
+      await waitUntil(() => existsSync(path.join(directory, 'result.json')), 10000);
+      await completed;
+      childPid = Number(readFileSync(path.join(directory, 'child.pid'), 'utf8'));
+      leafPid = Number(readFileSync(path.join(directory, 'leaf.pid'), 'utf8'));
+      expect(JSON.parse(readFileSync(path.join(directory, 'result.json'), 'utf8')))
+        .toMatchObject({ signal: 'SIGTERM', exitCode: 143 });
+      await waitUntil(() => !isAlive(childPid!) && !isAlive(leafPid!));
+    } finally {
+      for (const pid of [runner.pid, childPid, leafPid]) {
+        if (pid && isAlive(pid)) spawnSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+      }
+    }
+  }, 15000);
 });

@@ -16,3 +16,5 @@
 `plain` 的 `commons.io.version` 默认是 `2.18.0`。测试在临时副本中将其改为 `2.19.0`，随后读取实际加载依赖的实现版本，验证 POM 修改能够影响下一次启动。传入应用参数 `--exit=7` 则打印结果后返回 7。
 
 Gradle 夹具不携带 Wrapper 二进制，CI 固定安装 Gradle `8.14`。本机 smoke 使用 PATH 中的 Gradle，`JAVA_RUN_GRADLE_COMMAND` 可覆盖命令；临时 `GRADLE_USER_HOME` 与个人 Gradle 初始化脚本隔离，`JAVA_RUN_GRADLE_HOME` 可指向专用缓存。
+
+smoke 先读取真实 JDK 的原生命令行编码。中文项目目录在所有系统上保留；JVM / 应用参数可表示时完整验证 Unicode，无法表示时改用可表示的参数完成正常运行，并追加两项二进制拒绝验收，要求明确报错且不泄漏参数。Windows 单字节代码页上的完整验收因此包含 22 项，其余环境通常为 20 项。

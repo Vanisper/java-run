@@ -23,6 +23,18 @@ if (mode === 'args') {
   } else {
     writeFileSync(path.join(directory!, 'result.json'), JSON.stringify(await running));
   }
+} else if (mode === 'windows-runner') {
+  const batch = path.join(directory!, 'tree entry.cmd');
+  writeFileSync(batch, `@echo off\r\n"${process.execPath}" "${helperPath}" tree "${directory}"\r\n`);
+  const running = runCommand({ command: batch, args: [], cwd: directory!, stage: 'Windows 进程树清理' });
+  const ready = setInterval(() => {
+    if (existsSync(path.join(directory!, 'leaf.pid'))) {
+      clearInterval(ready);
+      // Windows 没有可移植的 POSIX 信号发送，直接触发执行器已注册的转发入口
+      process.emit('SIGTERM');
+    }
+  }, 10);
+  writeFileSync(path.join(directory!, 'result.json'), JSON.stringify(await running));
 } else if (mode === 'tree' || mode === 'orphan') {
   writeFileSync(path.join(directory!, 'child.pid'), String(process.pid));
   spawn(process.execPath, [helperPath, 'leaf', directory!], { stdio: 'inherit' });

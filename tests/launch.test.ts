@@ -7,6 +7,7 @@ import { buildClasspath, createManifest } from '../src/core/classpath';
 import { discoverMainClass, hasMainMethod } from '../src/core/main-class';
 import { createLaunchCommand } from '../src/core/launch';
 import { runCommand } from '../src/process/exec';
+import { assertJavaArguments } from '../src/process/java-arguments';
 import { parseArgs } from '../src/cli/args';
 import { detectBuildTool } from '../src/build-tools/detect';
 import { planMaven, readEffectiveProject } from '../src/build-tools/maven';
@@ -23,9 +24,18 @@ function compile(directory: string, name: string, source: string): string {
   mkdirSync(output, { recursive: true });
   const file = join(directory, `${name}.java`);
   writeFileSync(file, source);
-  const result = spawnSync('javac', ['-encoding', 'UTF-8', '-d', output, file], { encoding: 'utf8' });
+  const result = spawnSync('javac', ['-encoding', 'UTF-8', '-d', 'classes', `${name}.java`], { cwd: directory, encoding: 'utf8' });
   if (result.status !== 0) throw new Error(result.stderr || result.error?.message);
   return output;
+}
+async function acceptsJavaArguments(args: string[], cwd: string): Promise<boolean> {
+  try {
+    await assertJavaArguments('java', args, cwd);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('无法完整表示')) return false;
+    throw error;
+  }
 }
 function project(directory: string): MavenProject {
   return { directory, pomFile: join(directory, 'pom.xml'), groupId: 'fixture', artifactId: 'app', version: '1', packaging: 'jar',
@@ -48,17 +58,43 @@ describe('目标类路径', () => {
     const directory = temporary(); const p = project(directory); mkdirSync(p.outputDirectory);
     expect(buildClasspath(p, '', true)).toEqual([p.outputDirectory]);
   });
-  test('真实 JDK 可加载含空格、中文、#、% 的目录并保留应用参数', async () => {
+  test('真实 JDK 可加载含空格、中文、#、% 的目录并保留可表示的应用参数', async () => {
     const directory = temporary();
     const classes = compile(directory, 'Hello', 'public class Hello { public static void main(String[] args) { System.out.print(String.join("|", args)); } }');
     const manifest = createManifest([classes]);
     expect(manifest).toContain('%23'); expect(manifest).toContain('%25'); expect(manifest).toContain('%20');
     for (const line of manifest.split('\r\n')) expect(Buffer.byteLength(line, 'utf8')).toBeLessThanOrEqual(70);
-    const config = parseArgs(['--cwd', directory, '--', '空格 值', 'a=b', 'quote\'"']);
+    const requested = ['空格 值', 'a=b', 'quote\'"'];
+    const unicodeArguments = await acceptsJavaArguments(requested, directory);
+    if (!unicodeArguments) {
+      await expect(createLaunchCommand(parseArgs(['--cwd', directory, '--', ...requested]), { directory, classesDirectories: [classes], classpath: [classes], jvmArgs: [] }, directory))
+        .rejects.toThrow('无法完整表示');
+    }
+    const applicationArgs = unicodeArguments ? requested : ['space value', 'a=b', 'quote\'"'];
+    const config = parseArgs(['--cwd', directory, '--', ...applicationArgs]);
     const launch = await createLaunchCommand(config, { directory, classesDirectories: [classes], classpath: [classes], jvmArgs: [] }, directory);
     const result = await runCommand(launch, { capture: true });
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe('空格 值|a=b|quote\'"');
+    expect(result.stdout).toBe(applicationArgs.join('|'));
+  }, 20000);
+
+  test('JVM 参数按原生编码完整传递或提前报错', async () => {
+    const directory = temporary();
+    const classes = compile(directory, 'PropertyEntry', 'public class PropertyEntry { public static void main(String[] args) { System.out.print(System.getProperty("fixture.jvm")); } }');
+    const value = 'token-secret-中文';
+    const project = { directory, classesDirectories: [classes], classpath: [classes], jvmArgs: [] };
+    const argument = `-Dfixture.jvm=${value}`;
+    if (await acceptsJavaArguments([argument], directory)) {
+      const launch = await createLaunchCommand(parseArgs(['--cwd', directory, `--jvm-arg=${argument}`]), project, directory);
+      expect((await runCommand(launch, { capture: true })).stdout).toBe(value);
+    } else {
+      const error = await createLaunchCommand(parseArgs(['--cwd', directory, `--jvm-arg=${argument}`]), project, directory)
+        .then(() => undefined, caught => caught as Error);
+      expect(error?.message).toContain('无法完整表示');
+      expect(error?.message).not.toContain(value);
+      const launch = await createLaunchCommand(parseArgs(['--cwd', directory, '--jvm-arg=-Dfixture.jvm=ascii-value']), project, directory);
+      expect((await runCommand(launch, { capture: true })).stdout).toBe('ascii-value');
+    }
   }, 20000);
   test('应用 JVM 默认使用 UTF-8，项目声明和 CLI 可按顺序覆盖', async () => {
     const directory = temporary();
@@ -71,14 +107,23 @@ describe('目标类路径', () => {
 });
 
 describe('主类选择', () => {
-  test('组合字符构成的合法 Unicode 标识符可以发现并启动', async () => {
+  test('组合字符主类可发现，并按原生编码启动或明确拒绝', async () => {
     const directory = temporary();
     const name = 'Cafe\u0301';
-    const classes = compile(directory, name, `public class ${name} { public static void main(String[] args) { System.out.print("UNICODE_MAIN_OK"); } }`);
+    // 源文件名保持 ASCII，避免 macOS / JDK 17 的 NFC 转换影响 public 类与文件名匹配
+    const classes = compile(directory, 'UnicodeEntry', `class ${name} { public static void main(String[] args) { System.out.print("UNICODE_MAIN_OK"); } }`);
     const config = parseArgs(['--cwd', directory, `--main=${name}`]);
-    const launch = await createLaunchCommand(config, { directory, classesDirectories: [classes], classpath: [classes], jvmArgs: [] }, directory);
     expect(discoverMainClass([classes])).toBe(name);
-    expect((await runCommand(launch, { capture: true })).stdout).toBe('UNICODE_MAIN_OK');
+    const project = { directory, classesDirectories: [classes], classpath: [classes], jvmArgs: [] };
+    if (await acceptsJavaArguments([name], directory)) {
+      const launch = await createLaunchCommand(config, project, directory);
+      expect((await runCommand(launch, { capture: true })).stdout).toBe('UNICODE_MAIN_OK');
+    } else {
+      await expect(createLaunchCommand(config, project, directory)).rejects.toThrow('无法完整表示');
+      compile(directory, 'FallbackEntry', 'public class FallbackEntry { public static void main(String[] args) { System.out.print("ASCII_MAIN_OK"); } }');
+      const launch = await createLaunchCommand(parseArgs(['--cwd', directory, '--main=FallbackEntry']), project, directory);
+      expect((await runCommand(launch, { capture: true })).stdout).toBe('ASCII_MAIN_OK');
+    }
     expect(() => parseArgs(['--main=Invalid³'])).toThrow('Java 类全名');
   }, 20000);
   test('通过 class 方法表发现唯一入口，注释与非 public/static 方法不会被当成入口', () => {

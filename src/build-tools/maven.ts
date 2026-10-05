@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { parseStringPromise } from 'xml2js';
 import { CommandError, runCommand } from '../process/exec';
+import { assertJavaArguments } from '../process/java-arguments';
 import { buildClasspath } from '../core/classpath';
 import type { BuildPlan, CommandSpec, MavenProject, PreparedProject, RunConfig } from '../core/types';
 
@@ -24,7 +25,7 @@ function validateBuildArgs(args: string[]): void {
     if (flags.has(arg)) continue;
     if (arg.startsWith('-D') && arg.length > 2) {
       const name = arg.slice(2).split('=', 1)[0]!;
-      if (!['output', 'expression', 'includeScope', 'excludeScope', 'skipTests', 'maven.test.skip', 'maven.main.skip', 'maven.install.skip'].includes(name)
+      if (!['output', 'outputEncoding', 'expression', 'includeScope', 'excludeScope', 'skipTests', 'maven.test.skip', 'maven.main.skip', 'maven.install.skip'].includes(name)
         && !name.startsWith('mdep.') && !name.startsWith('exec.')) continue;
       throw new Error(`构建属性 ${name} 由 java-run 管理，请使用对应的启动配置`);
     }
@@ -41,7 +42,7 @@ function validateBuildArgs(args: string[]): void {
 
 function command(config: RunConfig, goals: string[], stage: string, alsoMake = false): CommandSpec {
   validateBuildArgs(config.buildArgs);
-  const args = ['-B', '-ntp', ...config.buildArgs, '-f', join(config.cwd, 'pom.xml')];
+  const args = ['-B', '-ntp', ...config.buildArgs, '-f', 'pom.xml'];
   if (config.module) args.push('-pl', config.module);
   if (alsoMake && config.module) args.push('-am');
   args.push(...goals);
@@ -58,7 +59,7 @@ export function planMaven(config: RunConfig, workspace: string): BuildPlan {
   commands.push(command(config, [`${HELP_PLUGIN}:evaluate`, '-Dexpression=project.file', `-Doutput=${join(workspace, 'project-file.txt')}`, '-q'], '解析目标 POM'));
   commands.push(command(config, [`${HELP_PLUGIN}:effective-pom`, `-Doutput=${join(workspace, 'effective-pom.xml')}`, '-q'], '读取 Maven 有效模型'));
   commands.push(command(config, [`${DEPENDENCY_PLUGIN}:build-classpath`, `-DincludeScope=${config.includeTests ? 'test' : 'runtime'}`,
-    `-Dmdep.outputFile=${join(workspace, 'dependencies.txt')}`, '-Dmdep.regenerateFile=true', '-q'], '解析目标运行依赖'));
+    `-Dmdep.outputFile=${join(workspace, 'dependencies.txt')}`, '-DoutputEncoding=UTF-8', '-Dmdep.regenerateFile=true', '-q'], '解析目标运行依赖'));
   return {
     tool: 'maven', commands,
     notes: [config.module && config.build === 'auto' ? '自动准备使用 Maven install，仅写本地仓库，不执行 deploy' : '构建与依赖模型由 Maven 处理',
@@ -90,7 +91,7 @@ export async function readEffectiveProject(xml: string, pomFile: string): Promis
   };
   const outputPath = (value: unknown, name: string): string => {
     const text = scalar(value, name);
-    return isAbsolute(text) ? text : resolve(directory, text);
+    return resolve(directory, text);
   };
   const plugins = project.build?.plugins?.plugin;
   const pluginList = !plugins ? [] : Array.isArray(plugins) ? plugins : [plugins];
@@ -114,6 +115,7 @@ export async function prepareMaven(config: RunConfig, workspace: string): Promis
   const plan = planMaven(config, workspace);
   for (const spec of plan.commands) {
     console.error(`java-run：${spec.stage}`);
+    await assertJavaArguments(buildJava(), spec.args, config.cwd);
     const result = await runCommand(spec, { capture: true });
     if (result.exitCode !== 0) throw new CommandError(spec, result);
   }
@@ -143,6 +145,7 @@ export async function discoverMavenProjects(config: RunConfig, workspace: string
   const output = join(workspace, 'module-list.xml');
   const spec = command({ ...config, module: undefined }, [`${HELP_PLUGIN}:effective-pom`, `-Doutput=${output}`, '-q'], '读取 Maven 模块候选');
   console.error(`java-run：${spec.stage}`);
+  await assertJavaArguments(buildJava(), spec.args, config.cwd);
   const result = await runCommand(spec, { capture: true });
   if (result.exitCode !== 0) throw new CommandError(spec, result);
   const document = await parseStringPromise(readFileSync(output, 'utf8'), { explicitArray: false });
@@ -153,4 +156,8 @@ export async function discoverMavenProjects(config: RunConfig, workspace: string
     const main = project.properties?.['exec.mainClass'];
     return { value: selector, label: `${selector}（${main || '主类待解析，可能是库模块'}）` };
   });
+}
+
+function buildJava(): string {
+  return process.env.JAVA_HOME ? join(process.env.JAVA_HOME, 'bin', process.platform === 'win32' ? 'java.exe' : 'java') : 'java';
 }

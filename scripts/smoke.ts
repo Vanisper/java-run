@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { assertJavaArguments, readJavaNativeEncoding } from '../src/process/java-arguments';
 
 type Fixture = 'boot-single' | 'boot-reactor' | 'plain' | 'gradle-reactor';
 type Suite = 'quick' | 'full';
@@ -24,12 +25,12 @@ interface ProcessResult {
 interface Expectations {
   code?: number;
   stdout?: string[];
+  stderr?: string[];
   absent?: string[];
 }
 
 const projectRoot = path.resolve(import.meta.dir, '..');
 const fixtureNames: Fixture[] = ['boot-single', 'boot-reactor', 'plain', 'gradle-reactor'];
-const specialValue = 'hello world #中文%';
 
 function parseOptions(): SmokeOptions {
   let executable = path.join(projectRoot, 'dist', process.platform === 'win32' ? 'java-run.exe' : 'java-run');
@@ -130,6 +131,18 @@ async function main(): Promise<void> {
     await mkdir(repository, { recursive: true });
     await mkdir(gradleHome, { recursive: true });
     await mkdir(logDirectory);
+    const java = process.env.JAVA_HOME ? path.join(process.env.JAVA_HOME, 'bin', process.platform === 'win32' ? 'java.exe' : 'java') : 'java';
+    const nativeEncoding = await readJavaNativeEncoding(java, workspace);
+    let unicodeArguments = true;
+    try {
+      await assertJavaArguments(java, ['hello world #中文%'], workspace);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('无法完整表示')) throw error;
+      unicodeArguments = false;
+    }
+    const specialValue = unicodeArguments ? 'hello world #中文%' : 'hello world #%';
+    const configValue = unicodeArguments ? 'config value #中文%' : 'config value #%';
+    console.log(`Java native encoding: ${nativeEncoding}; Unicode argv: ${unicodeArguments ? 'supported' : 'explicit rejection required'}`);
     await writeFile(settings, '<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"/>\n');
     for (const fixture of fixtureNames) {
       const destination = path.join(workspace, `${fixture} 空格#中文%`);
@@ -150,6 +163,9 @@ async function main(): Promise<void> {
       if (result.code !== (expected.code ?? 0)) violations.push(`退出码应为 ${expected.code ?? 0}，实际为 ${result.code} (${result.signal ?? 'no signal'})`);
       for (const marker of expected.stdout ?? []) {
         if (!result.stdout.includes(marker)) violations.push(`缺少 stdout 标记: ${marker}`);
+      }
+      for (const marker of expected.stderr ?? []) {
+        if (!result.stderr.includes(marker)) violations.push(`缺少 stderr 标记: ${marker}`);
       }
       for (const marker of expected.absent ?? []) {
         if ((result.stdout + result.stderr).includes(marker)) violations.push(`出现禁止标记: ${marker}`);
@@ -227,17 +243,30 @@ async function main(): Promise<void> {
       await check('plain', argumentsFor('plain', ...directArguments, '--build-arg=-Pci', ...commonArguments), {
         stdout: ['[fixture] kind=plain', '[fixture] dependency-version=2.18.0', ...mavenMarkers, ...withoutTests],
       });
+      if (!unicodeArguments) {
+        const unsupportedValue = 'token-secret-中文';
+        for (const [name, argument] of [
+          ['plain-unrepresentable-application-argument', `--arg=${unsupportedValue}`],
+          ['plain-unrepresentable-jvm-argument', `--jvm-arg=-Dfixture.jvm=${unsupportedValue}`],
+        ]) {
+          await check(name!, argumentsFor('plain', ...directArguments, '--build=none', argument!), {
+            code: 1,
+            stderr: ['无法完整表示', '系统区域设置'],
+            absent: ['[fixture]', unsupportedValue],
+          });
+        }
+      }
       if (options.suite === 'full') {
         const configPath = path.join(projects.get('plain')!, '.java-run.json');
         await writeFile(configPath, JSON.stringify({
           mainClass: 'org.javarun.fixture.PlainApplication',
           build: 'none',
           buildArgs: mavenBuildArguments,
-          jvmArgs: ['-Dfixture.jvm=config value #中文%'],
+          jvmArgs: [`-Dfixture.jvm=${configValue}`],
           applicationArgs: ['--from-config'],
         }, null, 2));
         await check('project-config-default', [], {
-          stdout: ['[fixture] kind=plain', '[fixture] jvm-value=config value #中文%', '[fixture] arg=--from-config'],
+          stdout: ['[fixture] kind=plain', `[fixture] jvm-value=${configValue}`, '[fixture] arg=--from-config'],
         }, projects.get('plain')!);
         await check('project-config-override', ['--main=org.javarun.fixture.PlainApplication', '--jvm-arg=-Dfixture.jvm=cli value', '--arg=--from-cli'], {
           stdout: ['[fixture] jvm-value=cli value', '[fixture] arg=--from-config', '[fixture] arg=--from-cli'],

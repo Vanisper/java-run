@@ -169,6 +169,8 @@ java-run 启动独立 Java 进程，不模拟自定义 `JavaExec` / `bootRun` �
 
 当前支持 Maven `jar` 项目和启用了 Gradle Java 插件的项目，以及传统 `public static void main(String[])` 的 classpath 启动。主类发现只检查选定项目的已编译输出，不遍历所有依赖 Jar 寻找应用。JPMS、Android、native image、应用守护和热重启、部署不属于当前支持范围。
 
+Windows 的 Java 原生启动器按系统代码页转换命令行参数。classpath 文件 URL 可以保留中文路径，但主类名、JVM / 应用参数和传给构建工具的参数仍需能被该编码完整表示。java-run 会检测 JDK 的 `native.encoding` 并提前拒绝无法表示的参数，避免它们静默变成 `?`。需要传递任意 Unicode 参数时，应按系统要求启用 UTF-8 区域设置；`-Dfile.encoding=UTF-8` 控制应用文件编码，不能替代这项设置。自定义构建入口自行切换 JDK 时，还需核对其实际使用的工具链。[JDK Windows 启动器说明](https://www.oracle.com/java/technologies/javase/21-0-9-relnotes.html)
+
 开发与验证命令：
 
 ```sh

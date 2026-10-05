@@ -54,3 +54,13 @@
 核心实现提交为 `95f1b5f`，验收与 CI 提交为 `3005f8c`。评估与初始定位分别记录在 `4ba5822`、`40e87cf`，最终文档以本记录及 README 为准。
 
 包版本仍为旧 `0.0.5`，README 明确当前契约尚未发布。下一步正式发布前需确定开源许可证与版本号，实际运行三种原生系统的 CI，并据结果确认支持矩阵。性能、命名运行配置和新增运行模式按 [后续技术路线](product-design.md#后续技术路线) 推进，不以未运行的计划代替验证。
+
+## 首轮 CI 反馈与修复
+
+用户推送后的 [首轮 Check](https://github.com/Vanisper/java-run/actions/runs/37256647164) 对应 `2ad210c`。Linux / JDK 17、21 与 macOS / JDK 21 完成全部验收；macOS / JDK 17 的 Unicode 测试及两组 Windows 回归失败。
+
+macOS 的问题发生在测试源文件名：JDK 17 将文件路径转为 NFC，而 public 类使用 NFD。改用 ASCII 源文件名承载原有 NFD 类，保留主类发现和实际启动断言，JDK 17、21 都通过。
+
+Windows 原生 JDK 将系统代码页无法表示的参数替换为 `?`。修复包括 Gradle 通过临时脚本中的 UTF-8 请求读取目录和模块、使用 ASCII 根代理任务，Java / Jar 使用相对受控路径，以及执行前按真实 JDK 编码检查用户参数。中文 classpath 目录继续保留，无法表示的原始参数以明确错误结束。Maven 有效模型的输出路径统一归一化，依赖元数据输出固定 UTF-8。另增加实际 Windows 批处理进程树清理用例。
+
+修复后本地全量回归 91 项通过、3 项 Windows 专用测试跳过；新增 Maven 编码保护后专项 17 项通过。Gradle 8.14 在 JDK 17、21 下各 21 项验证通过，完整独立二进制 smoke 20 项全部通过。后续原生结果以 [分支 Check 运行](https://github.com/Vanisper/java-run/actions/workflows/check.yaml?query=branch%3Afeat%2Fopen-source-cli) 为准，不将本机结果替代 Windows 验收。

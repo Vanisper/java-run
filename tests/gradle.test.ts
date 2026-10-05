@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CommandError } from '../src/process/exec';
@@ -11,6 +11,12 @@ const availableGradle = process.env.JAVA_RUN_TEST_GRADLE ?? Bun.which('gradle');
 
 function directory(): string {
   const value = realpathSync(mkdtempSync(join(tmpdir(), 'java-run Gradle # 中文 % ')));
+  temporaryDirectories.push(value);
+  return value;
+}
+
+function externalWorkspace(): string {
+  const value = realpathSync(mkdtempSync(join(tmpdir(), 'java-run-metadata-')));
   temporaryDirectories.push(value);
   return value;
 }
@@ -66,10 +72,11 @@ describe('Gradle 计划契约', () => {
     file(root, 'settings.gradle.kts', 'rootProject.name = "kotlin-settings"');
     const workspace = join(root, 'metadata');
     const plan = planGradle(config(root, { module: 'apps/admin-server', buildArgs: ['-Pfeature=a b', '--offline'] }), workspace);
-    expect(plan.commands[0]?.args).toContain(`-DjavaRun.root=${root}`);
-    expect(plan.commands[0]?.args).toContain('-DjavaRun.target=:apps:admin-server');
+    expect(plan.commands[0]?.args).toContain(join('metadata', 'gradle-init.gradle'));
+    expect(plan.commands[0]?.args.some(value => /^-DjavaRun\.(?:root|target|output)=/.test(value))).toBe(false);
     expect(plan.commands[0]?.args).toContain('-Pfeature=a b');
-    expect(plan.commands[0]?.args.at(-1)).toMatch(/^:apps:admin-server:javaRunMetadata_/);
+    expect(plan.notes).toContain('目标 Gradle 项目：:apps:admin-server');
+    expect(plan.commands[0]?.args.at(-1)).toMatch(/^:javaRunMetadata_/);
     expect(existsSync(workspace)).toBe(false);
     expect(readFileSync(join(root, 'settings.gradle.kts'), 'utf8')).toBe('rootProject.name = "kotlin-settings"');
   });
@@ -104,6 +111,25 @@ describe('Gradle 计划契约', () => {
 });
 
 describe.skipIf(!availableGradle)('真实 Gradle 项目', () => {
+  test('中文项目根和模块使用项目外元数据目录，任务参数保持 ASCII', async () => {
+    const root = reactor();
+    const module = 'app中文';
+    renameSync(join(root, 'app'), join(root, module));
+    file(root, 'settings.gradle', `rootProject.name = 'runner-fixture'\ninclude '${module}', 'lib', 'other'\n`);
+    const workspace = externalWorkspace();
+    const options = { module: `:${module}`, buildCommand: availableGradle! };
+    const plan = planGradle(config(root, options), workspace);
+    expect(plan.commands[0]?.args.every(value => /^[\x00-\x7f]*$/.test(value))).toBe(true);
+    const candidates = await discoverGradleProjects(config(root, { buildCommand: availableGradle! }), workspace);
+    expect(candidates.map(candidate => candidate.value)).toContain(`:${module}`);
+    const prepared = await prepareGradle(config(root, options), workspace);
+    expect(prepared.directory).toBe(join(root, module));
+    expect(prepared.classpath.every(value => existsSync(value))).toBe(true);
+    expect(JSON.parse(readFileSync(join(workspace, 'gradle-project.json'), 'utf8')).directory).toBe(join(root, module));
+    expect(existsSync(join(root, 'metadata'))).toBe(false);
+    expect(existsSync(join(root, 'other', 'build'))).toBe(false);
+  }, 120000);
+
   test('buildSrc 约定插件与 included build 只参与必要任务，不接收主构建目标', async () => {
     const root = reactor();
     file(root, 'buildSrc/build.gradle', `
