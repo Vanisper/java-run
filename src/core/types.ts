@@ -41,16 +41,3 @@ export interface BuildPlan {
   commands: CommandSpec[];
   notes: string[];
 }
-
-/** Maven 选定项目的有效元数据 */
-export interface MavenProject {
-  pomFile: string;
-  directory: string;
-  groupId: string;
-  artifactId: string;
-  version: string;
-  packaging: string;
-  outputDirectory: string;
-  testOutputDirectory: string;
-  mainClass?: string;
-}

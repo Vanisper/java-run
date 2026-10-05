@@ -3,15 +3,14 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { buildClasspath, createManifest } from '../src/core/classpath';
+import { createManifest } from '../src/core/classpath';
 import { discoverMainClass, hasMainMethod } from '../src/core/main-class';
 import { createLaunchCommand } from '../src/core/launch';
 import { runCommand } from '../src/process/exec';
 import { assertJavaArguments, JavaArgumentEncodingError } from '../src/process/java-arguments';
 import { parseArgs } from '../src/cli/args';
 import { detectBuildTool } from '../src/build-tools/detect';
-import { planMaven, readEffectiveProject } from '../src/build-tools/maven';
-import type { MavenProject } from '../src/core/types';
+import { buildClasspath, planMaven, readEffectiveProject, type MavenProject } from '../src/build-tools/maven';
 
 const directories: string[] = [];
 function temporary(): string {

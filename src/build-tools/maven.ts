@@ -1,10 +1,22 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { parseStringPromise } from 'xml2js';
 import { CommandError, runCommand } from '../process/exec';
 import { assertJavaArguments, JavaArgumentEncodingError } from '../process/java-arguments';
-import { buildClasspath } from '../core/classpath';
-import type { BuildPlan, CommandSpec, MavenProject, PreparedProject, RunConfig } from '../core/types';
+import type { BuildPlan, CommandSpec, PreparedProject, RunConfig } from '../core/types';
+
+/** Maven 选定项目的有效元数据 */
+export interface MavenProject {
+  pomFile: string;
+  directory: string;
+  groupId: string;
+  artifactId: string;
+  version: string;
+  packaging: string;
+  outputDirectory: string;
+  testOutputDirectory: string;
+  mainClass?: string;
+}
 
 const HELP_PLUGIN = 'org.apache.maven.plugins:maven-help-plugin:3.5.1';
 const DEPENDENCY_PLUGIN = 'org.apache.maven.plugins:maven-dependency-plugin:3.8.1';
@@ -182,6 +194,23 @@ export async function readEffectiveProject(xml: string, pomFile: string): Promis
     testOutputDirectory: outputPath(project.build?.testOutputDirectory, 'build.testOutputDirectory'),
     mainClass: typeof configuredMain === 'string' && !configuredMain.includes('${') ? configuredMain : undefined,
   };
+}
+
+/** 保持 Maven 依赖顺序，只添加选定项目的编译输出 */
+export function buildClasspath(project: MavenProject, dependencyText: string, includeTests = false): string[] {
+  if (!existsSync(project.outputDirectory)) {
+    throw new Error(`找不到编译输出：${project.outputDirectory}，请使用默认自动构建模式准备项目`);
+  }
+  const outputs = [project.outputDirectory];
+  if (includeTests && existsSync(project.testOutputDirectory)) {
+    outputs.unshift(project.testOutputDirectory);
+  }
+  const dependencies = dependencyText.trim().split(delimiter).map(value => value.trim()).filter(Boolean)
+    .map(value => resolve(project.directory, value));
+  for (const dependency of dependencies) {
+    if (!existsSync(dependency)) throw new Error(`依赖文件不存在：${dependency}，请重新准备 Maven 依赖`);
+  }
+  return Array.from(new Set([...outputs, ...dependencies]));
 }
 
 /** 构建选定项目并获取 Maven 裁决后的运行类路径 */
