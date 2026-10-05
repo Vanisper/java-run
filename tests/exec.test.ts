@@ -75,12 +75,24 @@ describe('异步执行', () => {
   });
 
   test('undefined 仅从子环境移除变量，Windows 覆盖按名称忽略大小写', async () => {
+    const variableName = 'JAVA_RUN_CHILD_REMOVE';
+    const originalValue = process.env[variableName];
+    const removalName = process.platform === 'win32' ? variableName.toLowerCase() : variableName;
+    process.env[variableName] = 'parent-only-value';
+    try {
+      const removed = await runCommand(command('console.log(JSON.stringify({value:process.env.JAVA_RUN_CHILD_REMOVE}))'), {
+        capture: true, env: { [removalName]: undefined },
+      });
+      expect(JSON.parse(removed.stdout)).toEqual({});
+      expect(process.env[variableName]).toBe('parent-only-value');
+    } finally {
+      if (originalValue === undefined) delete process.env[variableName];
+      else process.env[variableName] = originalValue;
+    }
     const pathName = Object.keys(process.env).find(name => name.toLowerCase() === 'path')!;
     const originalPath = process.env[pathName];
     const overrideName = process.platform === 'win32' ? pathName.toLowerCase() : pathName;
     const source = 'console.log(JSON.stringify({path:process.env[Object.keys(process.env).find(name=>name.toLowerCase()==="path")]}))';
-    const removed = await runCommand(command(source), { capture: true, env: { [overrideName]: undefined } });
-    expect(JSON.parse(removed.stdout)).toEqual({});
     const overwritten = await runCommand(command(source), { capture: true, env: { [overrideName]: 'child-only-path' } });
     expect(JSON.parse(overwritten.stdout)).toEqual({ path: 'child-only-path' });
     expect({ path: process.env[pathName] }).toEqual({ path: originalPath });
