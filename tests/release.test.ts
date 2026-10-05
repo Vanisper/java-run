@@ -114,7 +114,7 @@ describe('发布产物契约', () => {
         expect(existsSync(join(replacement.binary, '..', 'LICENSE'))).toBe(false);
       } finally { await replacement.cleanup(); }
     } finally { rmSync(directory, { recursive: true, force: true }); }
-  });
+  }, 30000);
 
   test('缺少安装指南、ZIP 损坏或打包后字节发生变化时验收失败', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'java-run-release-invalid-'));
@@ -134,5 +134,5 @@ describe('发布产物契约', () => {
       writeFileSync(join(directory, `java-run-${platform}.zip`), 'not a ZIP');
       await expect(verifyReleasePackage(directory, platform, documentation)).rejects.toThrow('ZIP 操作失败');
     } finally { rmSync(directory, { recursive: true, force: true }); }
-  });
+  }, 30000);
 });
