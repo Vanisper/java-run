@@ -1,24 +1,24 @@
 {
   "name": "java-run",
-  "module": "cli.ts",
+  "module": "src/cli.ts",
   "type": "module",
   "version": "0.0.5",
   "scripts": {
     "version": "bumpp",
     "start": "bun run ./src/cli.ts",
-    "compile": "bun build ./src/cli.ts --compile --outfile=dist/java-run"
+    "compile": "bun build ./src/cli.ts --compile --outfile=dist/java-run",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "check": "bun run typecheck && bun test",
+    "smoke": "bun run scripts/smoke.ts"
   },
   "devDependencies": {
-    "@types/bun": "latest",
+    "@types/bun": "1.2.5",
     "bumpp": "^10.1.0",
-    "@types/cli-progress": "^3.11.6",
-    "@types/xml2js": "^0.4.14"
-  },
-  "peerDependencies": {
-    "typescript": "^5.0.0"
+    "@types/xml2js": "^0.4.14",
+    "typescript": "5.8.2"
   },
   "dependencies": {
-    "cli-progress": "^3.12.0",
     "iconv-lite": "^0.6.3",
     "jschardet": "^3.1.4",
     "xml2js": "^0.6.2"
