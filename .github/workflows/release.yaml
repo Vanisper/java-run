@@ -1,169 +1,95 @@
 name: Release
 
-permissions:
-  contents: write
-
 on:
   push:
     tags:
-      - 'v*'  # 监听以 v 开头的 tag
+      - 'v*'
+
+permissions:
+  contents: read
 
 jobs:
+  checks:
+    uses: ./.github/workflows/check.yaml
+
   build:
-    name: 构建并发版
+    name: 构建 ${{ matrix.name }}
+    needs: checks
     runs-on: ubuntu-latest
-
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64-baseline
+            target: bun-windows-x64-baseline
+            extension: .exe
+          - name: linux-x64-baseline
+            target: bun-linux-x64-baseline
+            extension: ''
+          - name: linux-arm64
+            target: bun-linux-arm64
+            extension: ''
+          - name: darwin-arm64
+            target: bun-darwin-arm64
+            extension: ''
+          - name: darwin-x64
+            target: bun-darwin-x64
+            extension: ''
     steps:
-      - name: 检出代码
+      - name: 检出事件对应的标签
         uses: actions/checkout@v4
-
-      - name: 获取当前和上一个标签
-        id: get_tags
-        run: |
-          git fetch --prune --unshallow
-          tags=($(git tag -l --sort=-version:refname))
-          current_tag=${tags[0]}
-          previous_tag=${tags[1]}
-          echo "previous_tag=$previous_tag" >> $GITHUB_OUTPUT
-          echo "current_tag=$current_tag" >> $GITHUB_OUTPUT
-
-      - name: 提取并分类提交消息
-        id: extract_commit_messages
-        run: |
-          set -e
-          current_tag="${{ steps.get_tags.outputs.current_tag }}"
-          previous_tag="${{ steps.get_tags.outputs.previous_tag }}"
-          if [ -z "$previous_tag" ]; then
-            commit_messages=$(git log --pretty=format:"%s - by @%an (%h)" "$current_tag" | grep -E 'feat|fix|docs|perf' || true)
-          else
-            commit_messages=$(git log --pretty=format:"%s - by @%an (%h)" "$previous_tag".."$current_tag" | grep -E 'feat|fix|docs|perf' || true)
-          fi
-
-          # 转义 ` 字符
-          commit_messages=$(echo "$commit_messages" | sed 's/`/\\\`/g')
-
-          {
-            echo 'feat_messages<<EOF'
-            echo "$commit_messages" | grep 'feat' || true
-            echo 'EOF'
-          } >> $GITHUB_OUTPUT
-          {
-            echo 'fix_messages<<EOF'
-            echo "$commit_messages" | grep 'fix' || true
-            echo 'EOF'
-          } >> $GITHUB_OUTPUT
-          {
-            echo 'docs_messages<<EOF'
-            echo "$commit_messages" | grep 'docs' || true
-            echo 'EOF'
-          } >> $GITHUB_OUTPUT
-          {
-            echo 'perf_messages<<EOF'
-            echo "$commit_messages" | grep 'perf' || true
-            echo 'EOF'
-          } >> $GITHUB_OUTPUT
-
-      - name: 获取当前分支名
-        id: get_branch_name
-        run: |
-          branch_name=$(git rev-parse --abbrev-ref HEAD)
-          echo "branch_name=$branch_name" >> $GITHUB_OUTPUT
-
-      - name: 发版详情
-        id: generate_release_notes
-        run: |
-          # 提取提交消息分类
-          feat_messages=("${{ steps.extract_commit_messages.outputs.feat_messages }}")
-          fix_messages=("${{ steps.extract_commit_messages.outputs.fix_messages }}")
-          docs_messages=("${{ steps.extract_commit_messages.outputs.docs_messages }}")
-          perf_messages=("${{ steps.extract_commit_messages.outputs.perf_messages }}")
-
-          release_notes=""
-
-          if [[ -n "$feat_messages" ]]; then
-            release_notes="$release_notes\n### 🚀 Features 新功能:  \n"
-            while IFS= read -r message; do
-              release_notes="$release_notes\n- $message"
-            done <<< "$feat_messages"
-          fi
-
-          if [[ -n "$fix_messages" ]]; then
-            release_notes="$release_notes\n### 🩹 Fixes 缺陷修复:  \n"
-            while IFS= read -r message; do
-              release_notes="$release_notes\n- $message"
-            done <<< "$fix_messages"
-          fi
-
-          if [[ -n "$docs_messages" ]]; then
-            release_notes="$release_notes\n### 📖 Documentation 文档:  \n"
-            while IFS= read -r message; do
-              release_notes="$release_notes\n- $message"
-            done <<< "$docs_messages"
-          fi
-
-          if [[ -n "$perf_messages" ]]; then
-            release_notes="$release_notes\n### 🔥 Performance 性能优化:  \n"
-            while IFS= read -r message; do
-              release_notes="$release_notes\n- $message"
-            done <<< "$perf_messages"
-          fi
-
-          # 转义 ` 字符
-          release_notes=$(echo "$release_notes" | sed 's/`/\\\`/g')
-          echo "release_notes=$release_notes" >> $GITHUB_OUTPUT
-
-      - name: 写入生成的发布说明到 changelog.md
-        run: |
-          echo -e "${{ steps.generate_release_notes.outputs.release_notes }}" > changelog.md
-          cat changelog.md
-
-      - name: Cache Bun dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lockb') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Setup Bun
+      - name: 安装固定版本 Bun
         uses: oven-sh/setup-bun@v2
-
-      - name: Install dependencies
-        run: bun install
-
-      - name: Build Windows
-        run: |
-          bun build src/cli.ts --compile --minify --sourcemap \
-            --outfile dist/java-run-windows-x64-baseline-${{ steps.get_tags.outputs.current_tag }} \
-            --target=bun-windows-x64-baseline
-
-      - name: Build Linux x64
-        run: |
-          bun build src/cli.ts --compile --minify --sourcemap \
-            --outfile dist/java-run-linux-x64-baseline-${{ steps.get_tags.outputs.current_tag }} \
-            --target=bun-linux-x64-baseline
-
-      - name: Build Linux ARM64
-        run: |
-          bun build src/cli.ts --compile --minify --sourcemap \
-            --outfile dist/java-run-linux-arm64-${{ steps.get_tags.outputs.current_tag }} \
-            --target=bun-linux-arm64
-
-      - name: Build macOS arm64
-        run: |
-          bun build src/cli.ts --compile --minify --sourcemap \
-            --outfile dist/java-run-darwin-arm64-${{ steps.get_tags.outputs.current_tag }} \
-            --target=bun-darwin-arm64
-
-      - name: Build macOS x64
-        run: |
-          bun build src/cli.ts --compile --minify --sourcemap \
-            --outfile dist/java-run-darwin-x64-${{ steps.get_tags.outputs.current_tag }} \
-            --target=bun-darwin-x64
-
-      - name: 创建发版
-        id: release_tag
-        uses: ncipollo/release-action@v1.14.0
         with:
-          artifacts: "dist/*"
-          bodyFile: changelog.md
+          bun-version-file: .bun-version
+      - name: 按锁文件安装依赖
+        run: bun install --frozen-lockfile
+      - name: 交叉编译
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          PLATFORM_NAME: ${{ matrix.name }}
+          BUN_TARGET: ${{ matrix.target }}
+          FILE_EXTENSION: ${{ matrix.extension }}
+        run: |
+          bun build src/cli.ts --compile --minify \
+            --target "$BUN_TARGET" \
+            --outfile "dist/java-run-${PLATFORM_NAME}-${RELEASE_TAG}${FILE_EXTENSION}"
+      - name: 上传单个平台产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: 校验并发布标签产物
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 汇总构建产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: dist
+      - name: 生成并核对 SHA-256
+        working-directory: dist
+        run: |
+          sha256sum java-run-* > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - name: 保存已校验产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-with-checksums
+          path: dist/*
+          if-no-files-found: error
+      - name: 发布当前事件的标签
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: dist/*
+          fail_on_unmatched_files: true

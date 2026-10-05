@@ -1,0 +1,7 @@
+processResources {
+    inputs.property('libraryMarker', 'gradle-library-v1')
+    inputs.property('libraryVersion', project.version)
+    filesMatching('library.properties') {
+        expand(libraryMarker: 'gradle-library-v1', libraryVersion: project.version)
+    }
+}

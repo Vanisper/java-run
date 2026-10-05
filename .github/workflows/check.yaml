@@ -1,0 +1,60 @@
+name: Check
+
+on:
+  pull_request:
+  push:
+    branches:
+      - '**'
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ${{ matrix.os }} / JDK ${{ matrix.java }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        java: ['17', '21']
+    env:
+      GRADLE_USER_HOME: ${{ github.workspace }}/.cache/gradle
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+      - name: 安装 JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - name: 安装固定版本 Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - name: 安装固定版本 Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+      - name: 缓存隔离的 Maven 仓库
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/java-run-maven-repository
+          key: ${{ runner.os }}-jdk-${{ matrix.java }}-maven-${{ hashFiles('tests/fixtures/**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-jdk-${{ matrix.java }}-maven-
+      - name: 按锁文件安装依赖
+        run: bun install --frozen-lockfile
+      - name: 类型检查
+        run: bun run typecheck
+      - name: 快速回归测试
+        run: bun test
+      - name: 编译本机二进制
+        run: bun run compile
+      - name: 原生二进制 Maven / Gradle smoke
+        env:
+          JAVA_RUN_MAVEN_REPOSITORY: ${{ runner.temp }}/java-run-maven-repository
+          JAVA_RUN_GRADLE_HOME: ${{ env.GRADLE_USER_HOME }}
+        run: bun scripts/smoke.ts --suite=full

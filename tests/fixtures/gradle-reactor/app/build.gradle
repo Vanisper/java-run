@@ -1,0 +1,19 @@
+apply plugin: 'application'
+
+application {
+    mainClass = 'org.javarun.fixture.GradleApplication'
+}
+
+dependencies {
+    implementation project(':lib')
+    implementation 'commons-io:commons-io:2.18.0'
+    testImplementation 'org.apache.commons:commons-lang3:3.17.0'
+}
+
+processResources {
+    def fixtureProfile = providers.gradleProperty('fixtureProfile').getOrElse('base')
+    inputs.property('fixtureProfile', fixtureProfile)
+    filesMatching('fixture.properties') {
+        expand(fixtureProfile: fixtureProfile)
+    }
+}
