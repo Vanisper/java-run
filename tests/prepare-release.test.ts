@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { prepareRelease } from '../scripts/prepare-release';
 
+// 实际 Git 进程集成测试需要覆盖不同平台的进程启动耗时
+const gitTestTimeout = 30_000;
 const directories: string[] = [];
 afterEach(() => {
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
@@ -79,7 +81,7 @@ describe('发布准备', () => {
     expect(git(project.origin, 'tag', '--list')).toBe('');
     expect(project.created[0]?.body).toContain('Approve workflows to run');
     expect(project.created[0]?.body).toContain('**Publish**');
-  });
+  }, gitTestTimeout);
 
   test('同一提交和版本重跑恢复已有 PR，不追加提交或创建重复 PR', () => {
     const project = fixture();
@@ -87,7 +89,7 @@ describe('发布准备', () => {
     expect(prepareRelease(project.options)).toEqual(original);
     expect(project.created).toHaveLength(1);
     expect(git(project.origin, 'rev-list', '--count', 'master..release/0.1.0')).toBe('1');
-  });
+  }, gitTestTimeout);
 
   test('推送后创建 PR 失败，可在重跑时从相同分支恢复', () => {
     const project = fixture();
@@ -97,7 +99,7 @@ describe('发布准备', () => {
     const pushed = git(project.origin, 'rev-parse', 'refs/heads/release/0.1.0');
     expect(prepareRelease(project.options).sha).toBe(pushed);
     expect(project.created).toHaveLength(1);
-  });
+  }, gitTestTimeout);
 
   test('拒绝无效、相同、回退和仅构建元数据不同的版本', () => {
     const project = fixture('1.0.0');
@@ -106,12 +108,12 @@ describe('发布准备', () => {
     }
     expect(git(project.origin, 'branch', '--list')).toBe('* master');
     expect(project.created).toHaveLength(0);
-  });
+  }, gitTestTimeout);
 
   test('接受从预发布版推进到正式版', () => {
     const project = fixture('1.0.0-rc.1');
     expect(prepareRelease({ ...project.options, version: '1.0.0' }).branch).toBe('release/1.0.0');
-  });
+  }, gitTestTimeout);
 
   test('已有标签时不创建准备分支', () => {
     const project = fixture();
@@ -119,7 +121,7 @@ describe('发布准备', () => {
     git(project.cwd, 'push', 'origin', 'refs/tags/v0.1.0');
     expect(() => prepareRelease(project.options)).toThrow('标签 v0.1.0 已存在');
     expect(git(project.origin, 'branch', '--list')).toBe('* master');
-  });
+  }, gitTestTimeout);
 
   test('不覆盖已有用户分支或准备后追加的用户改动', () => {
     const project = fixture();
@@ -134,7 +136,7 @@ describe('发布准备', () => {
     expect(() => prepareRelease(project.options)).toThrow('拒绝覆盖已有分支');
     expect(git(project.origin, 'rev-parse', 'refs/heads/release/0.1.0')).toBe(changed);
     expect(project.created).toHaveLength(1);
-  });
+  }, gitTestTimeout);
 
   test('同样的版本内容也不能冒充由工作流准备的分支', () => {
     const project = fixture();
@@ -147,7 +149,7 @@ describe('发布准备', () => {
     git(project.cwd, 'switch', 'master');
     expect(() => prepareRelease(project.options)).toThrow('拒绝覆盖已有分支');
     expect(git(project.origin, 'rev-parse', 'refs/heads/release/0.1.0')).toBe(userCommit);
-  });
+  }, gitTestTimeout);
 
   test('已有关闭的同版本 PR 或其他未合并发布 PR 时拒绝重复准备', () => {
     const project = fixture();
@@ -157,7 +159,7 @@ describe('发布准备', () => {
     project.requests[0]!.state = 'CLOSED';
     expect(() => prepareRelease(project.options)).toThrow('已关联关闭');
     expect(git(project.origin, 'branch', '--list')).toBe('* master');
-  });
+  }, gitTestTimeout);
 
   test('已关闭的其他版本与来自 fork 的同名 PR 不阻止准备', () => {
     const project = fixture();
@@ -167,7 +169,7 @@ describe('发布准备', () => {
     );
     expect(prepareRelease(project.options).branch).toBe('release/0.1.0');
     expect(project.created).toHaveLength(1);
-  });
+  }, gitTestTimeout);
 
   test('不改动脏工作区，且只能使用当前检出的指定主分支提交', () => {
     const project = fixture();
@@ -176,5 +178,5 @@ describe('发布准备', () => {
     expect(() => prepareRelease(project.options)).toThrow('未提交改动');
     expect(readFileSync(join(project.cwd, 'README.md'), 'utf8')).toBe('# Uncommitted work\n');
     expect(git(project.origin, 'branch', '--list')).toBe('* master');
-  });
+  }, gitTestTimeout);
 });

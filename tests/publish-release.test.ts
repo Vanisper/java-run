@@ -6,6 +6,9 @@ import { tmpdir } from 'node:os';
 import { assertPublishRequest, pushReleaseTag, readReleaseDraft, verifyReleaseSource } from '../scripts/publish-release';
 import { assertReleaseLicense } from '../scripts/release';
 
+// 实际 Git 进程集成测试需要覆盖不同平台的进程启动耗时
+const gitTestTimeout = 30_000;
+
 function repository() {
   const directory = mkdtempSync(join(tmpdir(), 'java-run-publish-'));
   const remote = join(directory, 'remote.git');
@@ -71,7 +74,7 @@ describe('手动发布契约', () => {
       expect(repo.run(repo.remote, ['rev-parse', 'refs/tags/v1.2.3'])).toBe(tagObject);
       expect(repo.git('status', '--porcelain')).toBe('');
     } finally { repo.cleanup(); }
-  });
+  }, gitTestTimeout);
 
   test('主分支前进后仍发布原先锁定的提交', () => {
     const repo = repository();
@@ -83,7 +86,7 @@ describe('手动发布契约', () => {
       expect(repo.run(repo.remote, ['rev-parse', 'refs/tags/v1.2.3^{}'])).toBe(repo.sha);
       expect(repo.run(repo.remote, ['rev-parse', 'master'])).not.toBe(repo.sha);
     } finally { repo.cleanup(); }
-  });
+  }, gitTestTimeout);
 
   test('同名轻量标签也必须精确匹配提交', () => {
     const repo = repository();
@@ -97,7 +100,7 @@ describe('手动发布契约', () => {
       expect(() => pushReleaseTag(repo.cwd, 'v1.2.3', newer)).toThrow('不能覆盖');
       expect(repo.run(repo.remote, ['rev-parse', 'refs/tags/v1.2.3'])).toBe(repo.sha);
     } finally { repo.cleanup(); }
-  });
+  }, gitTestTimeout);
 
   test('附注标签冲突、错误检出和未合入主分支的提交均拒绝发布', () => {
     const repo = repository();
@@ -114,7 +117,7 @@ describe('手动发布契约', () => {
       expect(() => pushReleaseTag(repo.cwd, 'v1.2.3', feature)).toThrow('不能覆盖');
       expect(repo.run(repo.remote, ['rev-parse', 'refs/tags/v1.2.3^{}'])).toBe(repo.sha);
     } finally { repo.cleanup(); }
-  });
+  }, gitTestTimeout);
 
   test('标签必须匹配包版本，远端查询失败不能当成标签不存在', () => {
     const repo = repository();
@@ -124,7 +127,7 @@ describe('手动发布契约', () => {
       expect(() => pushReleaseTag(repo.cwd, 'v1.2.3', repo.sha)).toThrow('git 执行失败');
       expect(repo.run(repo.remote, ['tag', '--list'])).toBe('');
     } finally { repo.cleanup(); }
-  });
+  }, gitTestTimeout);
 
   test('Release 草稿查询可恢复，错误响应与公开版本拒绝继续', async () => {
     const request = (status: number, body: unknown) => async () => new Response(JSON.stringify(body), { status });
