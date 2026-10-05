@@ -31,7 +31,7 @@ java-run 为 Maven 与 Gradle 的 Java 源码工作区提供统一启动入口�
 测试范围与夹具用途见 [夹具说明](../tests/fixtures/README.md)。
 
 - [Check](../.github/workflows/check.yaml)：Ubuntu、macOS、Windows 分别在 JDK 17 和 21 下执行源码回归、二进制编译和完整运行验收
-- [Release](../.github/workflows/release.yaml)：五个平台分别构建，JDK 21 完整运行验收，JDK 17 解压产物启动验收，再汇总并校验 ZIP
+- [Release Verify](../.github/workflows/release.yaml)：五个平台分别构建，JDK 21 完整运行验收，JDK 17 解压产物启动验收，再汇总并校验 ZIP
 
 固定环境的验收提供对应系统、体系结构和 JDK 的运行证据。
 其他构建工具版本、第三方插件和系统环境需要代表项目补充验证；平台范围见 [安装指南](installation.md)。
