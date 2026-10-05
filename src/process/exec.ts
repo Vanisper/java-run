@@ -46,7 +46,11 @@ export class CommandError extends Error {
 
 /** 异步命令的输出捕获和信号转发选项 */
 export interface RunCommandOptions {
-  /** 本次子进程的环境覆盖；未指定的变量继承父环境，undefined 删除变量 */
+  /**
+   * 本次子进程的环境覆盖，未指定的变量继承父环境
+   *
+   * @description undefined 删除变量；Windows 运行时可补回 PATH 等必需系统变量
+   */
   env?: NodeJS.ProcessEnv;
   /** 捕获 stdout 和 stderr；默认直接继承当前终端 */
   capture?: boolean;

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { parseStringPromise } from 'xml2js';
 import { CommandError, runCommand } from '../process/exec';
@@ -74,27 +74,30 @@ export function resolveMavenBaseDirectory(cwd: string, configuredBase?: string):
 
 async function executeMaven(spec: CommandSpec): Promise<void> {
   let env: NodeJS.ProcessEnv | undefined;
-  let execution = spec;
+  // Maven 对 Windows 子模块规范化路径，执行根也需展开 8.3 别名才能匹配相对模块选择器
+  let execution = process.platform === 'win32' ? { ...spec, cwd: realpathSync.native(spec.cwd) } : spec;
   let bridge = false;
   const java = buildJava();
-  await assertJavaArguments(java, spec.args, spec.cwd);
+  await assertJavaArguments(java, execution.args, execution.cwd);
   if (process.platform === 'win32') {
     const configuredKey = Object.keys(process.env).find(name => name.toLowerCase() === 'maven_basedir');
-    const base = resolveMavenBaseDirectory(spec.cwd, configuredKey ? process.env[configuredKey] : undefined);
-    const absoluteBase = resolve(spec.cwd, base);
+    const configuredBase = resolveMavenBaseDirectory(execution.cwd, configuredKey ? process.env[configuredKey] : undefined);
+    const resolvedBase = resolve(execution.cwd, configuredBase);
+    const absoluteBase = existsSync(resolvedBase) ? realpathSync.native(resolvedBase) : resolvedBase;
+    const base = relative(execution.cwd, absoluteBase) || '.';
     try {
-      await assertJavaArguments(java, [`-Dmaven.multiModuleProjectDirectory=${absoluteBase}`], spec.cwd);
+      await assertJavaArguments(java, [`-Dmaven.multiModuleProjectDirectory=${absoluteBase}`], execution.cwd);
       env = { MAVEN_BASEDIR: absoluteBase };
     } catch (error) {
       if (!(error instanceof Error) || !error.message.includes('无法完整表示')) throw error;
-      await assertJavaArguments(java, [`-Dmaven.multiModuleProjectDirectory=${base}`], spec.cwd);
+      await assertJavaArguments(java, [`-Dmaven.multiModuleProjectDirectory=${base}`], execution.cwd);
       // 初始化先用可表示的相对根，Maven CLI 再从 Unicode 子环境还原模型中的绝对根
       env = { MAVEN_BASEDIR: base, JAVA_RUN_MAVEN_BASE_DIRECTORY: absoluteBase };
-      execution = { ...spec, args: [...spec.args, baseDirectoryProperty] };
+      execution = { ...execution, args: [...execution.args, baseDirectoryProperty] };
       bridge = true;
     }
   }
-  if (bridge) await validateWindowsMavenVersion(spec, env!);
+  if (bridge) await validateWindowsMavenVersion(execution, env!);
   console.error(`java-run：${spec.stage}`);
   const result = await runCommand(execution, { capture: true, env });
   if (result.exitCode !== 0) throw new CommandError(execution, result);
