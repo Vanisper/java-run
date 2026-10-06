@@ -1,0 +1,44 @@
+name: Prepare Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '待发布的新版本（SemVer，不带 v，例如 0.1.0 或 0.1.0-rc.1）'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: 准备版本并创建发布 PR
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 限定主分支入口
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          if [ "$RELEASE_REF" != 'refs/heads/master' ]; then
+            echo '请从 master 手动运行 Prepare Release。'
+            exit 1
+          fi
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - name: 创建或恢复发布准备 PR
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: bun scripts/prepare-release.ts

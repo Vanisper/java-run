@@ -1,0 +1,31 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  request:
+    name: 确认发布入口
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 仅允许从 master 发布
+        env:
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          if [ "$RELEASE_REF" != 'refs/heads/master' ]; then
+            echo '请在 master 分支手动运行 Publish 工作流。'
+            exit 1
+          fi
+          echo "发布提交：$RELEASE_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    needs: request
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yaml
+    with:
+      publish: true

@@ -46,7 +46,7 @@ ZIP 解压后只有一个 `java-run-<平台>/` 目录，内含：
 - `java-run` 或 `java-run.exe`
 - 对应的 `java-run.sha256` 或 `java-run.exe.sha256`
 - 本安装指南 `INSTALL.md`
-- 许可证文件
+- MIT 许可证 `LICENSE`
 
 Release 的 `SHA256SUMS` 用于校验下载的 ZIP，包内 `.sha256` 用于校验解压后的二进制。
 按下面的步骤完成两次核对，再安装到 PATH。

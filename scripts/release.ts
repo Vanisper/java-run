@@ -10,6 +10,14 @@ const projectRoot = resolve(import.meta.dir, '..');
 const licenseNames = ['LICENSE', 'LICENSE.md', 'LICENSE.txt'];
 const repository = 'https://github.com/Vanisper/java-run';
 
+/** 正式发布要求仓库包含非空许可证文件 */
+export function assertReleaseLicense(directory: string): void {
+  if (!licenseNames.some(file => {
+    try { return readFileSync(resolve(directory, file), 'utf8').trim().length > 0; }
+    catch { return false; }
+  })) throw new Error('正式发布需要先补齐 LICENSE 文件');
+}
+
 /** 发布版本、预发布标识与需要原生验收的文件集合 */
 export interface ReleaseMetadata {
   version: string;
@@ -215,14 +223,13 @@ export async function writeReleaseChecksums(directory: string, version: string):
 async function main(argv: string[]): Promise<void> {
   const version: unknown = JSON.parse(readFileSync(resolve(projectRoot, 'package.json'), 'utf8')).version;
   if (typeof version !== 'string') throw new Error('package.json 必须包含版本字符串');
-  if (argv.length !== (argv[0] === 'package' ? 2 : 1)) throw new Error('用法：bun scripts/release.ts metadata | notes | checksums | verify-assets | package <平台>');
+  const publishing = argv[0] === 'metadata' && argv[1] === '--publish';
+  if (argv.length !== (argv[0] === 'package' || publishing ? 2 : 1)) {
+    throw new Error('用法：bun scripts/release.ts metadata [--publish] | notes | checksums | verify-assets | package <平台>');
+  }
   if (argv[0] === 'metadata') {
-    const metadata = releaseMetadata(version, process.env.GITHUB_REF_TYPE === 'tag' ? process.env.GITHUB_REF_NAME : undefined);
-    if (process.env.GITHUB_REF_TYPE === 'tag') {
-      if (!licenseNames.some(file => {
-        try { return readFileSync(resolve(projectRoot, file), 'utf8').trim().length > 0; } catch { return false; }
-      })) throw new Error('正式发布需要先补齐 LICENSE 文件');
-    }
+    const metadata = releaseMetadata(version);
+    if (publishing) assertReleaseLicense(projectRoot);
     console.log(JSON.stringify(metadata, null, 2));
     if (process.env.GITHUB_OUTPUT) {
       const outputs = Object.entries(metadata).map(([key, value]) => `${key}=${typeof value === 'object' ? JSON.stringify(value) : value}`);

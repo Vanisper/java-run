@@ -6,13 +6,20 @@ on:
     branches:
       - '**'
   workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+      publish:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: check-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+  group: check-${{ github.workflow }}-${{ inputs.ref || github.ref }}
+  cancel-in-progress: ${{ !inputs.publish }}
 
 jobs:
   check:
@@ -29,6 +36,8 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - name: 安装 JDK
         uses: actions/setup-java@v5
         with:

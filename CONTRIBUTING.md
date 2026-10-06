@@ -137,17 +137,19 @@ Markdown 正文使用正常中文标点，同组列表保持语法与标点统�
 Linux、macOS、Windows 与 JDK 17 / 21 组成六组矩阵，分别执行锁文件安装、类型检查、回归测试、本机编译和完整 smoke。
 最新结果可在 [GitHub Actions](https://github.com/Vanisper/java-run/actions/workflows/check.yaml) 查看。
 
-[Release 工作流](.github/workflows/release.yaml) 共用同一套构建与验收步骤，提供以下入口：
+[发布准备](.github/workflows/prepare-release.yaml)、[发布验收](.github/workflows/release.yaml)
+和[正式发布](.github/workflows/publish.yaml)分别提供以下入口：
 
-| 入口 | 验收与输出 |
-| --- | --- |
-| 分支 push 命中 `paths` | 五平台产物演练，保存 Actions artifacts 和发布说明预览；Check 独立运行 |
-| `workflow_dispatch` | 手动产物演练，并复用完整 Check |
-| `v*` 标签 push | 校验版本与许可证，执行完整 Check 和五平台验收，通过后发布 GitHub Release |
+| 工作流 | 入口 | 验收与输出 |
+| --- | --- | --- |
+| Prepare Release | 在 `master` 手动输入新版本 | 创建临时发布分支、更新版本号并提交发布 PR |
+| Release Verify | 分支 push 命中 `paths` | 五平台产物演练，保存 Actions artifacts 和发布说明预览；Check 独立运行 |
+| Release Verify | 手动运行 | 五平台产物演练，并复用完整 Check |
+| Publish | 在 `master` 手动运行 | 校验发布条件，执行完整 Check 和五平台验收，通过后创建标签并发布 GitHub Release |
 
 `paths` 限制分支演练的触发范围，包括工作流、发布脚本、相关测试、版本配置和安装指南等，完整清单以工作流为准。
-标签 push 不受此路径条件限制。
-工作流进入默认分支后，可通过 Actions 页面或 GitHub CLI 选择分支手动演练。
+手动入口不受路径条件限制。工作流进入默认分支后，可通过 Actions 页面或 GitHub CLI 运行。
+Publish 复用 Release Verify 的构建与验收步骤；标签由发布流程创建，推送标签不会触发发布。
 
 ### 发布平台与产物
 
@@ -173,7 +175,7 @@ Linux、macOS、Windows 与 JDK 17 / 21 组成六组矩阵，分别执行锁文�
 - `java-run` 或 `java-run.exe`
 - 对应的 `java-run.sha256` 或 `java-run.exe.sha256`
 - 从 [安装指南](docs/installation.md) 复制的 `INSTALL.md`
-- 仓库中存在的 `LICENSE`、`LICENSE.md` 或 `LICENSE.txt`
+- MIT 许可证 `LICENSE`
 
 汇总步骤要求恰好包含五种非空 ZIP 普通文件，然后生成并核对 `SHA256SUMS`。
 包内 `.sha256` 校验二进制，Release 单独提供的 `SHA256SUMS` 校验下载的 ZIP。
@@ -188,7 +190,7 @@ Linux 产物在 Ubuntu 24.04 的 glibc 环境验收，musl 和其他系统版本
 
 | 子命令 | 职责 |
 | --- | --- |
-| `metadata` | 校验版本，输出标签、预发布标识和平台矩阵；标签环境还校验标签与许可证 |
+| `metadata` | 校验版本，输出标签、预发布标识和平台矩阵；加 `--publish` 时还要求存在非空许可证文件 |
 | `package <平台>` | 打包 `dist` 中已有的二进制与校验文件，解压核对并执行 quick |
 | `checksums` | 核对 `dist` 中的五份 ZIP 集合，生成 `SHA256SUMS` |
 | `notes` | 向标准输出生成下载与安装说明 |
@@ -209,29 +211,44 @@ bun scripts/release.ts package darwin-arm64
 五个平台的 ZIP 汇集到只含这些文件的 `dist` 目录后，可执行 `checksums`。
 编译留下的裸二进制和 `.sha256` 不属于汇总输入。
 分支与手动演练保存产物和说明预览，不创建标签或 GitHub Release。
+`metadata` 根据当前源码生成元数据，不依赖所在分支或标签。
+`scripts/publish-release.ts` 由 Publish 工作流调用，不属于本地演练步骤。
 
 ### 发布版本
 
-发布前完成以下准备：
+项目采用 [MIT 许可证](LICENSE)，发布压缩包包含许可证原文。
+在仓库 **Settings → Actions → General → Workflow permissions** 中启用
+**Allow GitHub Actions to create and approve pull requests**，允许 Prepare Release 创建发布 PR。
+组织级策略也需要允许此设置。
 
-- 确定开源许可证，添加非空的 `LICENSE`、`LICENSE.md` 或 `LICENSE.txt`
-- 确定发布版本，更新 `package.json` 并核对版本输出
-- 完成待发布提交的检查，审查平台产物和支持边界
+每个版本按以下流程准备与发布：
 
-`bun run version` 使用 bumpp 调整 `package.json`，不自动提交、创建标签或推送。
-版本变更通过 PR 合入主分支后，创建并推送 `v<package.json 版本>` 标签。
-版本必须符合 SemVer，标签必须与包版本严格一致。
+1. 将本次要发布的功能与修复合入 `master`。
+2. 在 Actions 打开 **Prepare Release**，点击 **Run workflow**，选择 `master`，
+   输入不带 `v` 的新版本，如 `0.1.0` 或 `0.1.0-rc.1`。
+3. 审查自动创建的发布 PR。若页面显示 **Approve workflows to run**，
+   按 [GitHub 工作流触发规则](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)批准运行，
+   等待检查通过后合并。
+4. 在 Actions 打开 **Publish**，点击 **Run workflow**，选择 `master`，执行正式发布。
+5. 发布完成后，检查 Release 的标签、下载表、ZIP 内容和校验和，
+   并按安装指南核对下载后的版本输出；临时发布分支可删除。
 
-元数据校验通过后，同一标签提交的六组 Check 与五平台产物验收并行执行。
-全部通过后，工作流创建或恢复未公开草稿，上传五份 ZIP 和 `SHA256SUMS`。
+Prepare Release 从本次手动运行绑定的提交创建 `release/<版本>` 分支，仅修改 `package.json` 的版本号。
+新版本必须符合 SemVer，并高于该提交中的当前版本。
+工作流保留已有分支和标签，也不会同时创建多个待合并的发布 PR。
+需要手动准备版本时，可使用 `bun run version` 调整 `package.json`，再通过 PR 合入 `master`。
+该命令不自动提交、创建标签或推送；合并后的发布入口同样是 Publish。
+
+Publish 从所选提交的 `package.json` 读取版本，无需再次输入版本号。
+整次运行锁定触发时的 `master` 提交，后续主分支更新不会改变本次待发布代码。
+工作流先校验版本、许可证、提交归属及已有标签与 Release，再对同一提交并行执行六组 Check 和五平台产物验收。
+全部通过后，创建指向该提交的 `v<版本>` 附注标签，以及对应的未公开草稿，上传五份 ZIP 和 `SHA256SUMS`。
 Release 正文包含下载表、安装说明及 GitHub 生成的变更说明。
 
 公开前会核对远端资产集合，缺失或额外文件均使流程失败并保留草稿。
 上传和核对成功后自动公开，无需额外人工审批。
 预发布版本标记为 prerelease，且不标记为 latest；稳定版的 latest 选择使用 GitHub 默认规则。
-同一标签的运行串行执行，不中断正在进行的发布。
-
-发布完成后，检查 Release 的标签、下载表、ZIP 内容和校验和，并按安装指南核对下载后的版本输出。
+正式发布运行串行执行，不中断正在进行的发布。
 
 ### 失败重试
 
@@ -241,6 +258,11 @@ Release 正文包含下载表、安装说明及 GitHub 生成的变更说明。
 gh run rerun <run-id> --failed
 ```
 
-重跑使用原始提交和 ref，已验收的 Actions artifacts 支持同名覆盖。
-Release 资产只允许在未公开草稿中替换；已经公开的标签版本会被拒绝。
-修改代码后应运行新提交的验收，已发布版本的修正通过新版本发布。
+Prepare Release 的原始运行可以重跑，恢复同版本、同起点的分支和 PR。
+主分支前进后再次点击 Run workflow 会绑定新的起点，不会覆盖此前创建的发布分支。
+如需调整已有发布准备，直接在对应 PR 中修改并接受检查。
+
+Publish 重跑使用原始提交和 ref，已验收的 Actions artifacts 支持同名覆盖。
+流程可以复用指向同一提交的已有标签，并恢复未公开草稿；指向其他提交的标签和已公开版本会被拒绝。
+Release 资产只允许在未公开草稿中替换。
+修改代码后应通过 PR 合入 `master`，再运行新提交的验收；已发布版本的修正通过新版本发布。
