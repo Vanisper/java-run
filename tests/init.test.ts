@@ -142,12 +142,16 @@ describe('生成项目启动配置', () => {
     expect(next.javaCommand).toBeUndefined();
     expect(next.buildCommand).toBeUndefined();
     expect(existsSync(join(fixture.root, 'application-started'))).toBe(false);
-    expect(result.stderr).not.toMatch(/\[java-run[^\]]*\] ℹ 运行 /);
+    expect(result.stderr).not.toContain('ℹ 启动应用');
   }, 30000);
 
   test('Maven 单项目保存自动发现的主类，默认配置保持简洁', () => {
     const fixture = mavenFixture();
-    expect(init(fixture).code).toBe(0);
+    const result = init(fixture);
+    expect(result.code).toBe(0);
+    expect(result.stderr.match(/^Maven$/gm)).toHaveLength(1);
+    expect(result.stderr).not.toContain('[java-run');
+    expect(result.stderr).not.toContain('ℹ 启动应用');
     expect(configuration(fixture)).toEqual({ buildTool: 'maven', mainClass: 'MavenEntry' });
     expect(parseArgs(['--cwd', fixture.root]).buildTool).toBe('maven');
     expect(existsSync(join(fixture.root, 'application-started'))).toBe(false);
@@ -239,18 +243,35 @@ describe('生成项目启动配置', () => {
     expect(init(fixture, ['--force']).code).toBe(7);
     expect(readFileSync(fixture.config, 'utf8')).toBe(original);
   }, 30000);
+
+  test.each([130, 143])('准备取消保留退出码 %s，只报告一次取消且不保存配置', exitCode => {
+    const fixture = gradleFixture({ failureCode: exitCode });
+    const result = init(fixture);
+    expect(result.code).toBe(exitCode);
+    expect(result.stderr.match(/已取消/g)).toHaveLength(1);
+    expect(result.stderr).not.toContain('失败');
+    expect(result.stderr).not.toContain('CommandError');
+    expect(existsSync(fixture.config)).toBe(false);
+  }, 30000);
 });
 
 describe('CLI 启动入口', () => {
-  test('前置 classpath JVM 参数不影响受控类路径或入口日志', () => {
+  test.each([undefined, 'app'])('模块 %s 下前置 classpath JVM 参数不影响受控类路径或分组入口日志', module => {
     const fixture = mavenFixture();
     const result = spawnSync(process.execPath, [
       cli, '--cwd', fixture.root, '--build-command', fixture.command,
+      ...(module ? [`--module=${module}`] : []),
       '--jvm-arg=-classpath', '--jvm-arg=unused-classpath',
     ], { encoding: 'utf8', timeout: 20000, stdio: ['pipe', 'pipe', 'pipe'] });
     if (result.error) throw result.error;
     expect(result.status).toBe(0);
-    expect(result.stderr).toContain('[java-run:run:maven] ℹ 运行 MavenEntry');
+    const title = module ? `Maven · ${module}` : 'Maven';
+    expect(result.stderr.split('\n').filter(line => line === title)).toHaveLength(1);
+    expect(result.stderr).toMatch(/^  ✓ 项目准备\s+\d+(?:\.\d+)?(?:ms|s)$/m);
+    expect(result.stderr).toMatch(/^  入口\s+MavenEntry$/m);
+    expect(result.stderr).toContain('  ℹ 启动应用');
+    expect(result.stderr.indexOf('  入口')).toBeLessThan(result.stderr.indexOf('  ℹ 启动应用'));
+    expect(result.stderr).not.toContain('[java-run');
     expect(existsSync(join(fixture.root, 'application-started'))).toBe(true);
   }, 30000);
 });

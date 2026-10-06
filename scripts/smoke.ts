@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { assertJavaArguments, JavaArgumentEncodingError, readJavaNativeEncoding } from '../src/process/java-arguments';
 import { createLogger } from '../src/logging/logger';
-import { createTerminalReporter, writeDiagnostic } from '../src/terminal/log-reporter';
+import { createTerminalReporter, writeTerminalText } from '../src/terminal/log-reporter';
 import { resolveTerminalPolicy } from '../src/terminal/policy';
 
 type Fixture = 'boot-single' | 'boot-reactor' | 'plain' | 'gradle-reactor';
@@ -185,7 +185,7 @@ async function main(): Promise<void> {
       if (violations.length) {
         checkLogger.error(`验收失败\n${violations.join('\n')}`);
         await logger.flush();
-        await writeDiagnostic(`stdout:\n${result.stdout.slice(-16_000)}\nstderr:\n${result.stderr.slice(-16_000)}`);
+        await writeTerminalText(`stdout:\n${result.stdout.slice(-16_000)}\nstderr:\n${result.stderr.slice(-16_000)}`);
         throw new Error(`${name} 未通过；完整输出: ${logDirectory}`);
       }
       checks++;

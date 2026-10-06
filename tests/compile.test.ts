@@ -85,7 +85,7 @@ describe('独立二进制构建', () => {
       const brokenCompile = join(scripts, 'compile.ts');
       const terminal = join(root, 'src/terminal');
       mkdirSync(terminal, { recursive: true });
-      for (const name of ['log-reporter.ts', 'style.ts', 'policy.ts']) {
+      for (const name of ['log-reporter.ts', 'layout.ts', 'style.ts', 'policy.ts']) {
         copyFileSync(resolve(import.meta.dir, `../src/terminal/${name}`), join(terminal, name));
       }
       mkdirSync(join(root, 'src/logging'));

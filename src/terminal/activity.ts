@@ -3,7 +3,7 @@ import type { Writable } from 'node:stream';
 import { decodeOutput } from '../process/exec';
 import { resolveTerminalPolicy, type TerminalPolicy } from './policy';
 import { styleText } from './style';
-import { formatTerminalLog } from './log-reporter';
+import { createTerminalLayout, type TerminalLayout } from './layout';
 
 /** 活动执行期间可更新的阶段与原始日志，调用范围限于活动回调 */
 export interface ActivityFeedback {
@@ -44,10 +44,11 @@ export async function activity<T>(
   work: (feedback: ActivityFeedback) => Promise<T>,
   policy: TerminalPolicy = resolveTerminalPolicy({}),
   output: ActivityOutput = process.stderr,
-  context: readonly string[] = [],
+  options: { context?: readonly string[]; layout?: TerminalLayout } = {},
 ): Promise<T> {
   if (activeOutputs.has(output)) throw new Error('同一终端不能同时展示多个活动');
   activeOutputs.add(output);
+  const layout = options.layout ?? createTerminalLayout(policy, { columns: () => output.columns });
   const started = performance.now();
   const live = policy.rewrite && policy.animation && policy.logMode === 'summary';
   type PreviewLine = { data: Buffer; complete: boolean };
@@ -136,19 +137,18 @@ export async function activity<T>(
       const width = Math.max(1, (output.columns ?? 80) - 1);
       const count = Math.max(0, Math.min(3, (output.rows ?? 24) - 2));
       const mark = ['|', '/', '-', '\\'][Math.floor((performance.now() - started) / 160) % 4];
-      const scope = context.length ? text(`[${context.join(':')}] `) : '';
-      frame = [fit(`${scope}${mark} ${status()}`, width), ...(count ? recent().slice(-count) : []).map(line => fit(`  ${line}`, width))];
+      frame = [fit(`  ${mark} ${status()}`, width), ...(count ? recent().slice(-count) : []).map(line => fit(`    ${line}`, width))];
       busy = true;
       // 裁剪和清屏始终使用可见文字，颜色不参与宽度计算
       const heading = frame[0]!;
-      const colored = heading.startsWith(scope + mark)
-        ? scope + styleText(mark, 'accent', policy) + heading.slice(scope.length + mark.length) : heading;
+      const colored = heading.startsWith(`  ${mark}`)
+        ? '  ' + styleText(mark, 'accent', policy) + heading.slice(3) : heading;
       void write(previous + [colored, ...frame.slice(1)].join('\n'))
         .finally(() => { busy = false; }).catch(() => {});
     } else {
-      const logs = policy.logMode === 'summary' ? recent().map(line => `  ${line}\n`).join('') : '';
+      const logs = policy.logMode === 'summary' ? recent().map(line => `    ${line}\n`).join('') : '';
       busy = true;
-      void write(formatTerminalLog({ context, type: 'info', message: `进行中 ${status()}` }, policy) + `\n${logs}`)
+      void write(layout.line('info', `进行中 ${status()}`) + `\n${logs}`)
         .finally(() => { busy = false; }).catch(() => {});
     }
   }
@@ -160,7 +160,9 @@ export async function activity<T>(
   let failure: unknown;
   let failed = false;
   try {
-    if (!live) await write(formatTerminalLog({ context, type: 'info', message: text(label) }, policy) + '\n');
+    const section = layout.section(options.context ?? []);
+    if (section) await write(section);
+    if (!live) await write(layout.line('info', text(label)) + '\n');
     return await work({
       stage(next) {
         if (closed) throw new Error('活动已经结束');
@@ -171,7 +173,7 @@ export async function activity<T>(
         if (!live) {
           const newline = policy.logMode === 'full' && lastByte !== 10 ? '\n' : '';
           lastByte = 10;
-          void write(newline + formatTerminalLog({ context, type: 'info', message: text(next) }, policy) + '\n').catch(() => {});
+          void write(newline + layout.line('info', text(next)) + '\n').catch(() => {});
         }
       },
       async output({ stream, data }) {
@@ -195,13 +197,12 @@ export async function activity<T>(
     output.removeListener('resize', render);
     await Promise.allSettled(pending);
     const exitCode = failure && typeof failure === 'object' && 'exitCode' in failure ? failure.exitCode : undefined;
-    const outcome = failed ? exitCode === 130 || exitCode === 143 ? '取消' : '失败' : '完成';
-    const type = outcome === '取消' ? 'warn' : failed ? 'error' : 'success';
+    const outcome = failed ? exitCode === 130 || exitCode === 143 ? '已取消 ' : '失败 ' : '';
+    const type = outcome === '已取消 ' ? 'warn' : failed ? 'error' : 'success';
     try {
       if (!writeError) {
         const newline = policy.logMode === 'full' && lastByte !== 10 ? '\n' : '';
-        const message = `${outcome} ${text(label)}（${((performance.now() - started) / 1000).toFixed(1)}s）`;
-        await write(clear() + newline + formatTerminalLog({ context, type, message }, policy) + '\n');
+        await write(clear() + newline + layout.line(type, outcome + text(label), performance.now() - started) + '\n');
       }
     } catch (error) {
       onError(error instanceof Error ? error : new Error(String(error)));

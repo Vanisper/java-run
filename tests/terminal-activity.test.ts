@@ -3,6 +3,9 @@ import { Writable } from 'node:stream';
 import { stripVTControlCharacters } from 'node:util';
 import { activity } from '../src/terminal/activity';
 import type { TerminalPolicy } from '../src/terminal/policy';
+import { createTerminalLayout } from '../src/terminal/layout';
+import { createTerminalReporter } from '../src/terminal/log-reporter';
+import { createLogger } from '../src/logging/logger';
 
 class TerminalOutput extends Writable {
   columns = 32;
@@ -26,11 +29,11 @@ describe('终端活动生命周期', () => {
     await expect(activity('项目准备', async feedback => {
       feedback.stage('构建命令');
       await feedback.output({ stream: 'stdout', data: Buffer.from('BUILD SUCCESS\n') });
-      expect(output.text).not.toContain('完成');
+      expect(output.text).not.toContain('✓');
       throw failure;
     }, plain, output)).rejects.toBe(failure);
     expect(output.text).toContain('失败 项目准备');
-    expect(output.text).not.toContain('完成 项目准备');
+    expect(output.text).not.toContain('✓ 项目准备');
     expect(output.listenerCount('error')).toBe(0);
   });
 
@@ -38,7 +41,7 @@ describe('终端活动生命周期', () => {
     const output = new TerminalOutput();
     const listeners = process.stdin.listenerCount('data');
     expect(await activity('快速检查', async () => 42, rich, output)).toBe(42);
-    expect(output.text).toContain('完成 快速检查');
+    expect(output.text).toMatch(/✓ 快速检查\s+\d+ms/);
     expect(output.text).not.toContain('\x1b');
     expect(process.stdin.listenerCount('data')).toBe(listeners);
     expect(output.listenerCount('resize')).toBe(0);
@@ -54,7 +57,7 @@ describe('终端活动生命周期', () => {
       expect(output.text).toContain('中文进度');
       expect(output.text).toMatch(/\d+\.\ds/);
     }, rich, output);
-    expect(output.text).toContain('完成 长时间准备');
+    expect(output.text).toContain('✓ 长时间准备');
     const finished = output.text;
     output.emit('resize');
     await delay(200);
@@ -85,7 +88,7 @@ describe('终端活动生命周期', () => {
       await feedback.output({ stream: 'stderr', data: Buffer.from('middle-B\n') });
       await feedback.output({ stream: 'stdout', data: Buffer.from('latest-C\n') });
       await delay(500);
-      expect(output.text).toContain('old-A\n  middle-B\n  latest-C');
+      expect(output.text).toContain('old-A\n    middle-B\n    latest-C');
       await feedback.output({ stream: 'stdout', data: Buffer.from('中').subarray(0, 2) });
       await delay(200);
       expect(output.text).not.toContain('ä¸');
@@ -117,7 +120,7 @@ describe('终端活动生命周期', () => {
       expect(Buffer.concat(output.chunks).includes(bytes)).toBe(true);
     }, { ...rich, logMode: 'full' }, output);
     expect(output.text).not.toContain('\x1b');
-    expect(output.text).toContain('\n✓ 完成');
+    expect(output.text).toContain('\n  ✓ 完整日志');
   });
 
   test('有色完整日志的状态及时复位，不改写原始编码或日志自带颜色', async () => {
@@ -130,24 +133,24 @@ describe('终端活动生命周期', () => {
     const result = Buffer.concat(output.chunks);
     const start = result.indexOf(bytes);
     expect(start).toBeGreaterThan(0);
-    expect(result.subarray(0, start).toString()).toBe('\x1b[36mℹ\x1b[39m 完整日志\n');
-    expect(result.subarray(start + bytes.length).toString()).toMatch(/^\n\x1b\[32m✓\x1b\[39m 完成 完整日志/);
+    expect(result.subarray(0, start).toString()).toBe('  \x1b[36mℹ\x1b[39m 完整日志\n');
+    expect(result.subarray(start + bytes.length).toString()).toMatch(/^\n  \x1b\[32m✓\x1b\[39m 完整日志/);
     expect(output.text).not.toContain('\x1b[2K');
   });
 
   for (const color of [false, true]) test(`状态颜色保留完成、失败和取消的文字及异常（${color ? '有色' : '无色'}）`, async () => {
     for (const [outcome, code, icon, failure] of [
-      ['完成', 32, '✓', undefined],
-      ['失败', 31, '×', new Error('校验失败')],
-      ['取消', 33, '!', Object.assign(new Error('取消'), { exitCode: 130 })],
-      ['取消', 33, '!', Object.assign(new Error('终止'), { exitCode: 143 })],
+      ['', 32, '✓', undefined],
+      ['失败 ', 31, '×', new Error('校验失败')],
+      ['已取消 ', 33, '!', Object.assign(new Error('取消'), { exitCode: 130 })],
+      ['已取消 ', 33, '!', Object.assign(new Error('终止'), { exitCode: 143 })],
     ] as const) {
       const output = new TerminalOutput();
       const work = activity('准备', async () => { if (failure) throw failure; }, { ...plain, color }, output);
       if (failure) await expect(work).rejects.toBe(failure);
       else await work;
-      expect(stripVTControlCharacters(output.text)).toContain(`${icon} ${outcome} 准备`);
-      if (color) expect(output.text).toContain(`\x1b[${code}m${icon}\x1b[39m ${outcome} 准备`);
+      expect(stripVTControlCharacters(output.text)).toContain(`${icon} ${outcome}准备`);
+      if (color) expect(output.text).toContain(`\x1b[${code}m${icon}\x1b[39m ${outcome}准备`);
       else expect(output.text).not.toContain('\x1b');
     }
   });
@@ -171,6 +174,27 @@ describe('终端活动生命周期', () => {
       await expect(activity('内层', async () => {}, plain, output)).rejects.toThrow('同时');
     }, plain, output);
     await activity('下一次', async () => {}, plain, output);
-    expect(output.text).toContain('完成 下一次');
+    expect(output.text).toContain('✓ 下一次');
+  });
+
+  test('日志与连续活动共享标题，重绘只清理活动行', async () => {
+    const output = new TerminalOutput();
+    output.columns = 80;
+    const layout = createTerminalLayout(rich, { columns: () => output.columns, contextTitle: () => 'Maven · app' });
+    const logger = createLogger({ context: 'java-run', reporter: createTerminalReporter(rich, output, layout) }).withContext('maven');
+    logger.info('准备启动');
+    await logger.flush();
+    const heading = output.text;
+    await activity('项目准备', async () => { await delay(500); }, rich, output, { context: logger.context, layout });
+    await activity('生成运行类路径', async () => {}, rich, output, { context: logger.context, layout });
+    logger.success('就绪');
+    await logger.flush();
+    expect(output.text.match(/Maven · app/g)).toHaveLength(1);
+    expect(heading).toBe('Maven · app\n\n  ℹ 准备启动\n');
+    expect(output.text).not.toContain('[java-run');
+    expect(output.text).not.toContain('\x1b[1A');
+    const results = output.chunks.map(chunk => stripVTControlCharacters(chunk.toString()).trimEnd()).filter(line => line.includes('✓ '));
+    const durations = results.slice(0, 2).map(line => Bun.stringWidth(line));
+    expect(durations[0]).toBe(durations[1]);
   });
 });

@@ -32,6 +32,7 @@ describe('准备过程日志接入', () => {
     expect(result.stdout).toBe('');
     expect(result.stderr.match(/BUILD-DIAGNOSTIC/g)).toHaveLength(1);
     expect(result.stderr).toContain('失败 项目准备');
+    expect(result.stderr).not.toContain('[java-run');
     expect(result.stderr).toContain('退出码 7');
   });
 
@@ -39,6 +40,7 @@ describe('准备过程日志接入', () => {
     const result = run('summary', true);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('元数据校验失败');
-    expect(result.stderr).not.toContain('完成 项目准备');
+    expect(result.stderr).toContain('失败 项目准备');
+    expect(result.stderr).not.toMatch(/✓\s+项目准备/);
   });
 });

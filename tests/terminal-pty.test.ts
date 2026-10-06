@@ -55,7 +55,21 @@ function expectColorResetBefore(transcript: string, marker: string) {
   const markerIndex = transcript.indexOf(marker);
   expect(markerIndex).toBeGreaterThan(-1);
   const styles = transcript.slice(0, markerIndex).match(/\x1b\[[\d;]*m/g);
-  expect(styles?.at(-1)).toBe('\x1b[39m');
+  expect(styles?.length).toBeGreaterThan(0);
+  const active = new Set<number>();
+  for (const style of styles ?? []) {
+    for (const code of style.slice(2, -1).split(';').map(Number)) {
+      if (code === 0) active.clear();
+      else if ([1, 2, 3, 4, 7, 8, 9].includes(code)) active.add(code);
+      else if (code === 22) { active.delete(1); active.delete(2); }
+      else if ([23, 24, 27, 28, 29].includes(code)) active.delete(code - 20);
+      else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) active.add(30);
+      else if (code === 39) active.delete(30);
+      else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) active.add(40);
+      else if (code === 49) active.delete(40);
+    }
+  }
+  expect([...active]).toEqual([]);
 }
 
 afterEach(() => {
@@ -187,8 +201,9 @@ describe.skipIf(Boolean(terminalPtyUnavailable))(`真实 PTY 交互${terminalPty
       expect(result.captured).toContain('BUILD_INPUT=kept-for-build');
       const buildPid = Number(/BUILD_READY=(\d+)/.exec(result.captured)![1]);
       expect(() => process.kill(buildPid, 0)).toThrow();
-      expect(stripVTControlCharacters(terminal.transcript)).toContain('取消 准备测试项目');
-      expect(terminal.transcript).toContain('\x1b[33m!\x1b[39m 取消');
+      expect(stripVTControlCharacters(terminal.transcript)).toContain('已取消 准备测试项目');
+      expect(terminal.transcript).toContain('\x1b[33m!\x1b[39m 已取消');
+      expect(terminal.transcript).not.toContain('[java-run');
       expect(terminal.transcript).toContain('\x1b[36m');
       expectColorResetBefore(terminal.transcript, 'ACTIVITY_DONE');
       const afterActivity = terminal.transcript.split('ACTIVITY_DONE')[1]!.split('ACTIVITY_RESULT=')[0]!;
@@ -213,7 +228,11 @@ describe.skipIf(Boolean(terminalPtyUnavailable))(`真实 PTY 交互${terminalPty
       const terminal = await runTerminalPty({ command: [process.execPath, '-e', source], steps: [{ waitFor: 'COLOR_ACTIVITY_DONE' }] });
       expect(terminal.exitCode).toBe(0);
       expect(terminal.transcript).toContain('\x1b[36m');
-      expect(terminal.transcript).toContain(`\x1b[${color}m${failure ? '×' : '✓'}\x1b[39m ${outcome}`);
+      expect(terminal.transcript).toContain(`\x1b[${color}m${failure ? '×' : '✓'}\x1b[39m `);
+      const visible = stripVTControlCharacters(terminal.transcript);
+      if (failure) expect(visible).toContain('失败 准备颜色测试');
+      else expect(visible).toMatch(/  ✓ 准备颜色测试\s+\d+(?:\.\d+)?(?:ms|s)/);
+      expect(visible).not.toContain('[java-run');
       expect(terminal.transcript).not.toContain('\x1b[2K');
       expectColorResetBefore(terminal.transcript, 'COLOR_ACTIVITY_DONE');
       expectRestored(terminal);
@@ -274,6 +293,12 @@ describe.skipIf(Boolean(terminalPtyUnavailable))(`真实 PTY 交互${terminalPty
       timeoutMs: 20000,
     });
     expect(terminal.exitCode).toBe(0);
+    const visible = stripVTControlCharacters(terminal.transcript);
+    expect(visible.split(/\r?\n/).filter(line => line === 'Maven · pty')).toHaveLength(1);
+    expect(visible).toMatch(/  入口\s+StdinApplication/);
+    expect(visible).toContain('  ℹ 启动应用');
+    expect(visible.indexOf('  ℹ 启动应用')).toBeLessThan(visible.indexOf('JAVA_READY'));
+    expect(visible).not.toContain('[java-run');
     expect(terminal.transcript).toContain('terminal-input\r\n');
     expectRestored(terminal);
   }, 30000);

@@ -3,10 +3,16 @@ import type { CommandSpec } from '../core/types';
 import { activity } from '../terminal/activity';
 import type { TerminalPolicy } from '../terminal/policy';
 import type { Logger } from '../logging/logger';
+import { createTerminalLayout, type TerminalLayout } from '../terminal/layout';
 
 /** 将准备过程的命令输出接入终端活动，并记录已展示的失败日志 */
-export function createPreparationPresentation(policy: TerminalPolicy, logger?: Logger) {
+export function createPreparationPresentation(
+  policy: TerminalPolicy,
+  logger?: Logger,
+  layout: TerminalLayout = createTerminalLayout(policy, { columns: () => process.stderr.columns }),
+) {
   const displayed = new WeakSet<CommandError>();
+  const reported = new WeakSet<CommandError>();
   return {
     /** 在模型读取和校验完成后结束活动，命令的非零结果仍由适配器解释 */
     async run<T>(label: string, work: (execute: typeof runCommand) => Promise<T>): Promise<T> {
@@ -34,9 +40,14 @@ export function createPreparationPresentation(policy: TerminalPolicy, logger?: L
             && error.stdout === previous.result.stdout && error.stderr === previous.result.stderr) displayed.add(error);
           throw error;
         }
-      }, policy, process.stderr, logger?.context);
+      }, policy, process.stderr, { context: logger?.context, layout }).catch(error => {
+        if (error instanceof CommandError) reported.add(error);
+        throw error;
+      });
     },
     /** 完整日志已写入终端时，失败处理只需追加错误上下文 */
     hasDisplayed(error: CommandError): boolean { return displayed.has(error); },
+    /** 活动已经给出结果提示，取消处理可据此避免重复展示 */
+    hasReported(error: CommandError): boolean { return reported.has(error); },
   };
 }

@@ -1,24 +1,15 @@
 import type { Writable } from 'node:stream';
-import { stripVTControlCharacters } from 'node:util';
 import type { LogRecord, LogReporter } from '../logging/logger';
 import type { TerminalPolicy } from './policy';
-import { styleText } from './style';
+import { createTerminalLayout, type TerminalLayout } from './layout';
 
-const icons = { debug: '·', info: 'ℹ', success: '✓', warn: '!', error: '×' } as const;
-
-function visibleText(value: string): string {
-  return stripVTControlCharacters(value).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ');
-}
-
-/** 按来源上下文和日志类型渲染提示，返回不含末尾换行的文字 */
+/** 将单条日志渲染为独立完整分组，返回不含末尾换行的文字 */
 export function formatTerminalLog(
   record: Pick<LogRecord, 'context' | 'type' | 'message'>,
   policy: Pick<TerminalPolicy, 'color'>,
 ): string {
-  const context = record.context.map(value => visibleText(value).replace(/[\n\t]/g, ' ')).join(':');
-  const tone = record.type === 'success' ? 'success' : record.type === 'warn' ? 'warning' : record.type === 'error' ? 'error' : 'accent';
-  const prefix = `${context ? `[${context}] ` : ''}${styleText(icons[record.type], tone, policy)} `;
-  return prefix + visibleText(record.message).replace(/\n/g, '\n  ');
+  const layout = createTerminalLayout(policy);
+  return layout.section(record.context) + layout.line(record.type, record.message);
 }
 
 function streamWriter(output: Writable) {
@@ -56,17 +47,23 @@ function streamWriter(output: Writable) {
   };
 }
 
-/** 将日志渲染为终端提示，默认写入 stderr；颜色只应用于级别符号 */
-export function createTerminalReporter(policy: Pick<TerminalPolicy, 'color'>, output: Writable = process.stderr): LogReporter {
+/** 将连续上下文的日志合并为同一终端分组，默认写入 stderr */
+export function createTerminalReporter(
+  policy: Pick<TerminalPolicy, 'color'>,
+  output: Writable = process.stderr,
+  layout: TerminalLayout = createTerminalLayout(policy, { columns: () => (output as Writable & { columns?: number }).columns }),
+): LogReporter {
   const writer = streamWriter(output);
   return {
-    log(record) { return writer.write(formatTerminalLog(record, policy) + '\n'); },
+    log(record) {
+      return writer.write(layout.section(record.context) + layout.line(record.type, record.message) + '\n');
+    },
     flush: writer.flush,
   };
 }
 
-/** 原样写入构建诊断，仅补齐缺失的末尾换行，完成前等待写入并释放监听 */
-export async function writeDiagnostic(value: string, output: Writable = process.stderr): Promise<void> {
+/** 原样写入终端文字，仅补齐缺失的末尾换行，完成前等待写入并释放监听 */
+export async function writeTerminalText(value: string, output: Writable = process.stderr): Promise<void> {
   const writer = streamWriter(output);
   try { await writer.write(value.endsWith('\n') ? value : value + '\n'); }
   finally { await writer.flush(); }
