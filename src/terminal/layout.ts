@@ -3,12 +3,17 @@ import type { LogRecord } from '../logging/logger';
 import type { TerminalPolicy } from './policy';
 import { styleText } from './style';
 
-/** 共享分组状态的终端文字排版，调用方负责按顺序写入返回值 */
+/** 无状态的终端文字排版，调用方负责按顺序写入返回值 */
 export interface TerminalLayout {
-  /** 上下文或标题变化时返回标题和空行，连续相同分组返回空字符串 */
-  section(context: readonly string[]): string;
-  /** 返回带状态符号的正文，不含末尾换行；耗时不足一秒时使用毫秒 */
-  line(type: LogRecord['type'], message: string, durationMs?: number): string;
+  /** 返回任务标题和可选来源标签，不含末尾换行；控制字符和换行会被清理 */
+  heading(label: string, context?: readonly string[]): string;
+  /** 返回带状态符号和来源标签的正文，不含末尾换行；indicator 可替换状态符号 */
+  line(type: LogRecord['type'], message: string, options?: {
+    context?: readonly string[];
+    /** 活动已用时间，单位为毫秒 */
+    durationMs?: number;
+    indicator?: string;
+  }): string;
   /** 返回标签和高亮值，不截断路径等完整内容 */
   details(label: string, value: string): string;
 }
@@ -24,47 +29,35 @@ function singleLine(value: string): string {
 }
 
 /**
- * 创建分组标题、状态行和详情的统一排版
+ * 创建任务标题、状态行、来源标签和详情的统一排版
  *
  * @description
- * - 上下文按完整层级比较，标题变化也会开启新分组；空上下文不显示标题
- * - 正文保留换行和完整内容，耗时最多对齐到第 60 列，窄屏不足时另起一行
- * - columns 在每次排版时读取，未提供时按 80 列计算
+ * - 只处理呈现，不修改原始上下文
+ * - 正文保留换行和完整内容，清理输入中的终端控制序列
  */
 export function createTerminalLayout(
   policy: Pick<TerminalPolicy, 'color'>,
-  options: { columns?: () => number | undefined; contextTitle?: (context: readonly string[]) => string } = {},
 ): TerminalLayout {
-  let previousContext: string | undefined;
-  let previousTitle: string | undefined;
+  function contextPrefix(context: readonly string[]): string {
+    const label = singleLine(context.join(':'));
+    return label ? styleText(`[${label}]`, 'dim', policy) + ' ' : '';
+  }
 
   function withDuration(line: string, durationMs?: number): string {
     if (durationMs === undefined || !Number.isFinite(durationMs) || durationMs < 0) return line;
     const duration = durationMs < 1000 ? `${Math.round(durationMs)}ms` : `${(durationMs / 1000).toFixed(1).replace(/\.0$/, '')}s`;
-    const available = options.columns?.();
-    const width = Math.min(60, Math.max(1, Number.isFinite(available) ? Math.floor(available!) - 1 : 79));
-    const padding = width - Bun.stringWidth(line) - Bun.stringWidth(duration);
-    const time = styleText(duration, 'dim', policy);
-    if (padding >= 2) return line + ' '.repeat(padding) + time;
-    return line + '\n' + ' '.repeat(Math.max(2, width - Bun.stringWidth(duration))) + time;
+    return line + '  ' + styleText(duration, 'dim', policy);
   }
 
   return {
-    section(context) {
-      const key = JSON.stringify(context);
-      const title = context.length ? singleLine(options.contextTitle?.(context) ?? context.join(' · ')) : '';
-      if (key === previousContext && title === previousTitle) return '';
-      const separator = previousContext === undefined ? '' : '\n';
-      previousContext = key;
-      previousTitle = title;
-      return title ? `${separator}${styleText(title, 'bold', policy)}\n\n` : '';
-    },
-    line(type, message, durationMs) {
+    heading: (label, context = []) => contextPrefix(context) + singleLine(label),
+    line(type, message, { context = [], durationMs, indicator } = {}) {
       const tone = type === 'success' ? 'success' : type === 'warn' ? 'warning' : type === 'error' ? 'error' : 'accent';
+      const icon = singleLine(indicator ?? icons[type]).trim() || icons[type];
       const [first, ...rest] = visibleText(message).split('\n');
-      const line = withDuration(`  ${styleText(icons[type], tone, policy)} ${first}`, durationMs);
-      return [line, ...rest.map(value => `    ${value}`)].join('\n');
+      const line = withDuration(`${contextPrefix(context)}${styleText(icon, tone, policy)} ${first}`, durationMs);
+      return [line, ...rest.map(value => `  ${value}`)].join('\n');
     },
-    details: (label, value) => `  ${singleLine(label)}  ${styleText(singleLine(value), 'accent', policy)}`,
+    details: (label, value) => `${singleLine(label)}  ${styleText(singleLine(value), 'accent', policy)}`,
   };
 }

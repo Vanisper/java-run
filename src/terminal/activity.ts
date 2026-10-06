@@ -4,6 +4,7 @@ import { decodeOutput } from '../process/exec';
 import { resolveTerminalPolicy, type TerminalPolicy } from './policy';
 import { styleText } from './style';
 import { createTerminalLayout, type TerminalLayout } from './layout';
+import { createLinePrefixer } from './line-prefix';
 
 /** 活动执行期间可更新的阶段与原始日志，调用范围限于活动回调 */
 export interface ActivityFeedback {
@@ -48,7 +49,10 @@ export async function activity<T>(
 ): Promise<T> {
   if (activeOutputs.has(output)) throw new Error('同一终端不能同时展示多个活动');
   activeOutputs.add(output);
-  const layout = options.layout ?? createTerminalLayout(policy, { columns: () => output.columns });
+  const layout = options.layout ?? createTerminalLayout(policy);
+  const context = options.context ?? [];
+  const prefixOutput = createLinePrefixer('│ ');
+  const border = styleText('│', 'dim', policy) + ' ';
   const started = performance.now();
   const live = policy.rewrite && policy.animation && policy.logMode === 'summary';
   type PreviewLine = { data: Buffer; complete: boolean };
@@ -84,6 +88,13 @@ export async function activity<T>(
     const rows = frame.reduce((sum, line) => sum + Math.max(1, Math.ceil(Bun.stringWidth(line) / width)), 0);
     frame = [];
     return '\r\x1b[2K' + '\x1b[1A\r\x1b[2K'.repeat(Math.max(0, rows - 1));
+  }
+
+  function announce(): Promise<void> {
+    const newline = policy.logMode === 'full' && lastByte !== 10 ? '\n' : '';
+    lastByte = 10;
+    prefixOutput.reset();
+    return write(newline + border + layout.line('info', text(current)) + '\n');
   }
 
   function append(stream: 'stdout' | 'stderr', data: Buffer): void {
@@ -137,18 +148,20 @@ export async function activity<T>(
       const width = Math.max(1, (output.columns ?? 80) - 1);
       const count = Math.max(0, Math.min(3, (output.rows ?? 24) - 2));
       const mark = ['|', '/', '-', '\\'][Math.floor((performance.now() - started) / 160) % 4];
-      frame = [fit(`  ${mark} ${status()}`, width), ...(count ? recent().slice(-count) : []).map(line => fit(`    ${line}`, width))];
+      const prefix = border + layout.line('info', '', { indicator: mark });
+      frame = [fit(prefix + status(), width), ...(count ? recent().slice(-count) : []).map(line => fit(`│ ${line}`, width))];
       busy = true;
       // 裁剪和清屏始终使用可见文字，颜色不参与宽度计算
-      const heading = frame[0]!;
-      const colored = heading.startsWith(`  ${mark}`)
-        ? '  ' + styleText(mark, 'accent', policy) + heading.slice(3) : heading;
-      void write(previous + [colored, ...frame.slice(1)].join('\n'))
+      const visible = frame[0]!;
+      const plainPrefix = text(prefix);
+      const colored = visible.startsWith(plainPrefix) ? prefix + visible.slice(plainPrefix.length)
+        : visible;
+      void write(previous + [colored, ...frame.slice(1).map(line => styleText(line.slice(0, 1), 'dim', policy) + line.slice(1))].join('\n'))
         .finally(() => { busy = false; }).catch(() => {});
     } else {
-      const logs = policy.logMode === 'summary' ? recent().map(line => `    ${line}\n`).join('') : '';
+      const logs = policy.logMode === 'summary' ? recent().map(line => `${border}${line}\n`).join('') : '';
       busy = true;
-      void write(layout.line('info', `进行中 ${status()}`) + `\n${logs}`)
+      void write(border + layout.line('info', `进行中 ${status()}`) + `\n${logs}`)
         .finally(() => { busy = false; }).catch(() => {});
     }
   }
@@ -160,9 +173,7 @@ export async function activity<T>(
   let failure: unknown;
   let failed = false;
   try {
-    const section = layout.section(options.context ?? []);
-    if (section) await write(section);
-    if (!live) await write(layout.line('info', text(label)) + '\n');
+    await write(layout.heading(label, context) + '\n');
     return await work({
       stage(next) {
         if (closed) throw new Error('活动已经结束');
@@ -171,16 +182,14 @@ export async function activity<T>(
         lines.length = 0;
         partial.stdout = partial.stderr = undefined;
         if (!live) {
-          const newline = policy.logMode === 'full' && lastByte !== 10 ? '\n' : '';
-          lastByte = 10;
-          void write(newline + layout.line('info', text(next)) + '\n').catch(() => {});
+          void announce().catch(() => {});
         }
       },
       async output({ stream, data }) {
         if (closed) throw new Error('活动已经结束');
         lastOutput = performance.now();
         if (policy.logMode === 'full') {
-          await write(data);
+          await write(prefixOutput.push(data));
           if (data.length) lastByte = data[data.length - 1]!;
         } else {
           append(stream, data);
@@ -197,12 +206,12 @@ export async function activity<T>(
     output.removeListener('resize', render);
     await Promise.allSettled(pending);
     const exitCode = failure && typeof failure === 'object' && 'exitCode' in failure ? failure.exitCode : undefined;
-    const outcome = failed ? exitCode === 130 || exitCode === 143 ? '已取消 ' : '失败 ' : '';
-    const type = outcome === '已取消 ' ? 'warn' : failed ? 'error' : 'success';
+    const outcome = failed ? exitCode === 130 || exitCode === 143 ? '已取消' : '失败' : '完成';
+    const type = outcome === '已取消' ? 'warn' : failed ? 'error' : 'success';
     try {
       if (!writeError) {
         const newline = policy.logMode === 'full' && lastByte !== 10 ? '\n' : '';
-        await write(clear() + newline + layout.line(type, outcome + text(label), performance.now() - started) + '\n');
+        await write(clear() + newline + styleText('└', 'dim', policy) + ' ' + layout.line(type, outcome, { durationMs: performance.now() - started }) + '\n');
       }
     } catch (error) {
       onError(error instanceof Error ? error : new Error(String(error)));

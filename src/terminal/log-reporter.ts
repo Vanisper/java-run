@@ -3,13 +3,13 @@ import type { LogRecord, LogReporter } from '../logging/logger';
 import type { TerminalPolicy } from './policy';
 import { createTerminalLayout, type TerminalLayout } from './layout';
 
-/** 将单条日志渲染为独立完整分组，返回不含末尾换行的文字 */
+/** 将单条日志渲染为带来源标签的文字，不含末尾换行 */
 export function formatTerminalLog(
   record: Pick<LogRecord, 'context' | 'type' | 'message'>,
   policy: Pick<TerminalPolicy, 'color'>,
 ): string {
   const layout = createTerminalLayout(policy);
-  return layout.section(record.context) + layout.line(record.type, record.message);
+  return layout.line(record.type, record.message, { context: record.context });
 }
 
 function streamWriter(output: Writable) {
@@ -47,16 +47,16 @@ function streamWriter(output: Writable) {
   };
 }
 
-/** 将连续上下文的日志合并为同一终端分组，默认写入 stderr */
+/** 为每条日志显示来源标签，默认写入 stderr */
 export function createTerminalReporter(
   policy: Pick<TerminalPolicy, 'color'>,
   output: Writable = process.stderr,
-  layout: TerminalLayout = createTerminalLayout(policy, { columns: () => (output as Writable & { columns?: number }).columns }),
+  layout: TerminalLayout = createTerminalLayout(policy),
 ): LogReporter {
   const writer = streamWriter(output);
   return {
     log(record) {
-      return writer.write(layout.section(record.context) + layout.line(record.type, record.message) + '\n');
+      return writer.write(layout.line(record.type, record.message, { context: record.context }) + '\n');
     },
     flush: writer.flush,
   };

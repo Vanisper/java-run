@@ -27,16 +27,7 @@ export async function main(argv: string[]): Promise<number> {
   try {
     const config = parseArgs(argv);
     const policy = resolveTerminalPolicy(config.terminal);
-    const layout = createTerminalLayout(policy, {
-      columns: () => process.stderr.columns,
-      contextTitle: context => {
-        const tool = context[2];
-        if (tool === 'maven' || tool === 'gradle') {
-          return [tool === 'maven' ? 'Maven' : 'Gradle', config.module].filter(Boolean).join(' · ');
-        }
-        return context.join(' · ');
-      },
-    });
+    const layout = createTerminalLayout(policy);
     logger = createLogger({ context: 'java-run', reporter: createTerminalReporter(policy, process.stderr, layout) })
       .withContext(config.action, { cwd: config.cwd });
     if (config.action === 'help') { helpLog(); return 0; }

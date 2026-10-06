@@ -9,10 +9,12 @@ import { createTerminalLayout, type TerminalLayout } from '../terminal/layout';
 export function createPreparationPresentation(
   policy: TerminalPolicy,
   logger?: Logger,
-  layout: TerminalLayout = createTerminalLayout(policy, { columns: () => process.stderr.columns }),
+  layout: TerminalLayout = createTerminalLayout(policy),
 ) {
   const displayed = new WeakSet<CommandError>();
   const reported = new WeakSet<CommandError>();
+  const tool = logger?.context.at(-1);
+  const stagePrefix = tool === 'maven' ? 'Maven ' : tool === 'gradle' ? 'Gradle ' : undefined;
   return {
     /** 在模型读取和校验完成后结束活动，命令的非零结果仍由适配器解释 */
     async run<T>(label: string, work: (execute: typeof runCommand) => Promise<T>): Promise<T> {
@@ -21,7 +23,7 @@ export function createPreparationPresentation(
       return activity(label, async feedback => {
         try {
           return await work(async (spec, options) => {
-            feedback.stage(spec.stage);
+            feedback.stage(stagePrefix && spec.stage.startsWith(stagePrefix) ? spec.stage.slice(stagePrefix.length) : spec.stage);
             let outputFailed = false;
             try {
               const result = await runCommand(spec, { ...options, capture: true, onOutput: async chunk => {

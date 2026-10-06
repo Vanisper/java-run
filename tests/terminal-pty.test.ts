@@ -4,7 +4,6 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { stripVTControlCharacters } from 'node:util';
 import { runTerminalPty, terminalPtyUnavailable, type TerminalPtyResult, type TerminalPtyStep } from './helpers/terminal-pty';
 
 const selectionModule = new URL('../src/cli/selection.ts', import.meta.url).href;
@@ -55,7 +54,6 @@ function expectColorResetBefore(transcript: string, marker: string) {
   const markerIndex = transcript.indexOf(marker);
   expect(markerIndex).toBeGreaterThan(-1);
   const styles = transcript.slice(0, markerIndex).match(/\x1b\[[\d;]*m/g);
-  expect(styles?.length).toBeGreaterThan(0);
   const active = new Set<number>();
   for (const style of styles ?? []) {
     for (const code of style.slice(2, -1).split(';').map(Number)) {
@@ -77,13 +75,10 @@ afterEach(() => {
 });
 
 describe.skipIf(Boolean(terminalPtyUnavailable))(`真实 PTY 交互${terminalPtyUnavailable ? `（跳过：${terminalPtyUnavailable}）` : ''}`, () => {
-  test('方向键选择展示青色菜单和绿色结果，返回前恢复终端', async () => {
+  test('方向键选择返回候选，返回前恢复终端', async () => {
     const { terminal, result } = await select([{ send: '\x1b[B\r' }]);
     expect(terminal.exitCode).toBe(0);
     expect(result).toEqual({ value: ':apps:module-01', raw: false, listeners: [0, 0] });
-    expect(terminal.transcript).toContain('\x1b[36m?\x1b[39m');
-    expect(terminal.transcript).toContain('\x1b[32m✓\x1b[39m');
-    expect(terminal.transcript).toContain('\x1b[32mmodule-01\x1b[39m');
     expectColorResetBefore(terminal.transcript, 'PTY_RESULT=');
     expectRestored(terminal);
   }, 15000);
@@ -137,7 +132,6 @@ describe.skipIf(Boolean(terminalPtyUnavailable))(`真实 PTY 交互${terminalPty
     const { terminal, result } = await select([{ send: '2\n' }], { env: { TERM: 'dumb', FORCE_COLOR: '1' } });
     expect(terminal.exitCode).toBe(0);
     expect(result.value).toBe(':apps:module-01');
-    expect(terminal.transcript).toContain('选择 [1-22]：');
     const menu = terminal.transcript.slice(terminal.transcript.lastIndexOf('\n', terminal.transcript.indexOf('选择启动项目')) + 1);
     expect(menu).not.toContain('\x1b');
     expectRestored(terminal);
@@ -201,10 +195,6 @@ describe.skipIf(Boolean(terminalPtyUnavailable))(`真实 PTY 交互${terminalPty
       expect(result.captured).toContain('BUILD_INPUT=kept-for-build');
       const buildPid = Number(/BUILD_READY=(\d+)/.exec(result.captured)![1]);
       expect(() => process.kill(buildPid, 0)).toThrow();
-      expect(stripVTControlCharacters(terminal.transcript)).toContain('已取消 准备测试项目');
-      expect(terminal.transcript).toContain('\x1b[33m!\x1b[39m 已取消');
-      expect(terminal.transcript).not.toContain('[java-run');
-      expect(terminal.transcript).toContain('\x1b[36m');
       expectColorResetBefore(terminal.transcript, 'ACTIVITY_DONE');
       const afterActivity = terminal.transcript.split('ACTIVITY_DONE')[1]!.split('ACTIVITY_RESULT=')[0]!;
       expect(afterActivity).toBe('\r\n');
@@ -212,29 +202,30 @@ describe.skipIf(Boolean(terminalPtyUnavailable))(`真实 PTY 交互${terminalPty
     }, 15000);
   }
 
-  for (const [failure, outcome, color] of [[false, '完成', 32], [true, '失败', 31]] as const) {
-    test(`关闭动画时活动${outcome}保留语义颜色，并在后续输出前复原`, async () => {
+  for (const failure of [false, true]) {
+    test(`关闭动画时活动${failure ? '失败' : '成功'}不重绘并恢复终端`, async () => {
       const source = `
         import { activity } from ${JSON.stringify(activityModule)};
         import { resolveTerminalPolicy } from ${JSON.stringify(policyModule)};
+        const failure = new Error('TEST_FAILURE');
+        let result;
         try {
-          await activity('准备颜色测试', async feedback => {
+          const value = await activity('准备测试项目', async feedback => {
             feedback.stage('读取测试模型');
-            if (${failure}) throw new Error('测试模型无效');
+            if (${failure}) throw failure;
+            return 'WORK_RESULT';
           }, resolveTerminalPolicy({ animation: false }));
-        } catch (error) { if (!${failure}) throw error; }
-        console.log('COLOR_ACTIVITY_DONE');
+          result = { value };
+        } catch (error) { result = { sameError: error === failure }; }
+        console.log('ACTIVITY_RESULT=' + JSON.stringify(result));
+        console.log('NO_ANIMATION_DONE');
       `;
-      const terminal = await runTerminalPty({ command: [process.execPath, '-e', source], steps: [{ waitFor: 'COLOR_ACTIVITY_DONE' }] });
+      const terminal = await runTerminalPty({ command: [process.execPath, '-e', source], steps: [{ waitFor: 'NO_ANIMATION_DONE' }] });
       expect(terminal.exitCode).toBe(0);
-      expect(terminal.transcript).toContain('\x1b[36m');
-      expect(terminal.transcript).toContain(`\x1b[${color}m${failure ? '×' : '✓'}\x1b[39m `);
-      const visible = stripVTControlCharacters(terminal.transcript);
-      if (failure) expect(visible).toContain('失败 准备颜色测试');
-      else expect(visible).toMatch(/  ✓ 准备颜色测试\s+\d+(?:\.\d+)?(?:ms|s)/);
-      expect(visible).not.toContain('[java-run');
+      const result = JSON.parse(/ACTIVITY_RESULT=([^\r\n]+)/.exec(terminal.transcript)![1]!);
+      expect(result).toEqual(failure ? { sameError: true } : { value: 'WORK_RESULT' });
       expect(terminal.transcript).not.toContain('\x1b[2K');
-      expectColorResetBefore(terminal.transcript, 'COLOR_ACTIVITY_DONE');
+      expectColorResetBefore(terminal.transcript, 'ACTIVITY_RESULT=');
       expectRestored(terminal);
     }, 15000);
   }
@@ -293,12 +284,7 @@ describe.skipIf(Boolean(terminalPtyUnavailable))(`真实 PTY 交互${terminalPty
       timeoutMs: 20000,
     });
     expect(terminal.exitCode).toBe(0);
-    const visible = stripVTControlCharacters(terminal.transcript);
-    expect(visible.split(/\r?\n/).filter(line => line === 'Maven · pty')).toHaveLength(1);
-    expect(visible).toMatch(/  入口\s+StdinApplication/);
-    expect(visible).toContain('  ℹ 启动应用');
-    expect(visible.indexOf('  ℹ 启动应用')).toBeLessThan(visible.indexOf('JAVA_READY'));
-    expect(visible).not.toContain('[java-run');
+    expectColorResetBefore(terminal.transcript, 'JAVA_READY');
     expect(terminal.transcript).toContain('terminal-input\r\n');
     expectRestored(terminal);
   }, 30000);

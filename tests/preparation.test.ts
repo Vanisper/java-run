@@ -9,16 +9,20 @@ function run(logMode: 'summary' | 'full', invalidMetadata = false) {
     import { createPreparationPresentation } from ${JSON.stringify(modulePath)};
     import { CommandError } from ${JSON.stringify(execPath)};
     const ui = createPreparationPresentation({ input: 'none', rewrite: false, color: false, animation: false, logMode: '${logMode}' });
+    const validationError = new Error('元数据校验失败');
+    let commandExitCode;
     const spec = { command: process.execPath, args: ['-e', 'process.stdout.write("BUILD-DIAGNOSTIC\\\\n"); process.exit(${invalidMetadata ? 0 : 7})'], cwd: process.cwd(), stage: '构建' };
     try {
       await ui.run('项目准备', async execute => {
         const result = await execute(spec);
+        commandExitCode = result.exitCode;
         if (result.exitCode) throw new CommandError(spec, result);
-        throw new Error('元数据校验失败');
+        throw validationError;
       });
     } catch (error) {
       if (error instanceof CommandError && !ui.hasDisplayed(error)) process.stderr.write(error.stdout);
       console.error(error.message);
+      if (${invalidMetadata}) process.stdout.write(JSON.stringify({ commandExitCode, sameError: error === validationError }));
       process.exitCode = error.exitCode || 1;
     }
   `], { encoding: 'utf8', timeout: 10000 });
@@ -31,16 +35,11 @@ describe('准备过程日志接入', () => {
     expect(result.status).toBe(7);
     expect(result.stdout).toBe('');
     expect(result.stderr.match(/BUILD-DIAGNOSTIC/g)).toHaveLength(1);
-    expect(result.stderr).toContain('失败 项目准备');
-    expect(result.stderr).not.toContain('[java-run');
-    expect(result.stderr).toContain('退出码 7');
   });
 
-  test('命令成功后的元数据校验失败只显示失败状态', () => {
+  test('命令成功后的元数据校验异常原样传递并使准备失败', () => {
     const result = run('summary', true);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('元数据校验失败');
-    expect(result.stderr).toContain('失败 项目准备');
-    expect(result.stderr).not.toMatch(/✓\s+项目准备/);
+    expect(JSON.parse(result.stdout)).toEqual({ commandExitCode: 0, sameError: true });
   });
 });

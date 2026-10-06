@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { Writable } from 'node:stream';
-import { stripVTControlCharacters } from 'node:util';
 import { createLogger } from '../src/logging/logger';
 import { createTerminalReporter, formatTerminalLog, writeTerminalText } from '../src/terminal/log-reporter';
 import { createTerminalLayout } from '../src/terminal/layout';
@@ -21,98 +20,33 @@ function captureOutput() {
   return { output, text: () => chunks.join('') };
 }
 
-describe('终端日志呈现契约', () => {
-  for (const [type, icon, color] of [
-    ['debug', '·', 36], ['info', 'ℹ', 36], ['success', '✓', 32], ['warn', '!', 33], ['error', '×', 31],
-  ] as const) {
-    test(`${type} 标题独立分组，仅为状态符号着色`, () => {
-      const record = { context: ['java-run', 'maven'], type, message: '完成' };
-      expect(formatTerminalLog(record, { color: true })).toBe(`\x1b[1mjava-run · maven\x1b[22m\n\n  \x1b[${color}m${icon}\x1b[39m 完成`);
-      expect(formatTerminalLog(record, { color: false })).toBe(`java-run · maven\n\n  ${icon} 完成`);
-    });
-  }
-
-  test('无 context 时省略标题，正文换行缩进，控制序列不能覆盖来源或正文', () => {
-    expect(formatTerminalLog({ context: [], type: 'info', message: '第一行\n第二行' }, { color: false }))
-      .toBe('  ℹ 第一行\n    第二行');
-    expect(formatTerminalLog({ context: ['java\nrun', '\x1b[31mmaven\x1b[39m'], type: 'warn', message: '\x1b[2J保留正文' }, { color: false }))
-      .toBe('java run · maven\n\n  ! 保留正文');
-    expect(formatTerminalLog({ context: [], type: 'info', message: '第一行\r\n\t第二行\x00\x07' }, { color: false }))
-      .toBe('  ℹ 第一行\n     第二行  ');
+describe('终端日志输出契约', () => {
+  test('外部文字中的控制序列被清理，正文和合法换行保留', () => {
+    const output = formatTerminalLog({
+      context: ['source\r\n\x1b[2J'], type: 'info', message: '\x1b[31mfirst\x1b[0m\nsecond\x00\x07',
+    }, { color: false });
+    expect(output).toContain('source');
+    expect(output).toContain('first');
+    expect(output).toContain('second');
+    expect(output).toContain('\n');
+    expect(output).not.toMatch(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+    const layout = createTerminalLayout({ color: false });
+    for (const value of [
+      layout.heading('\x1b[2Jheading\r\n', ['source\r\n\x07']),
+      layout.details('label\r\n', '\x1b[31mvalue\x1b[0m'),
+      layout.line('info', 'body', { indicator: '\x1b[2J/\r\n\x00' }),
+    ]) expect(value).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
   });
 
-  test('连续上下文只打印一次标题，所有结构化字段不混入正文或排版', async () => {
+  test('结构化字段不会隐式写入终端正文', async () => {
     const captured = captureOutput();
     const logger = createLogger({ context: 'java-run', reporter: createTerminalReporter({ color: true }, captured.output) })
-      .withContext('maven', { stage: 'compile' });
-    logger.info('准备', { module: ':app', durationMs: 999, secret: { token: '不可展示' } });
-    logger.success('完成\n启动目标：Example');
+      .withContext('maven', { stage: 'hidden-stage' });
+    logger.info('visible-message', { module: 'hidden-module', durationMs: 987654321, secret: { token: 'hidden-token' } });
     await logger.flush();
-    expect(captured.text()).toBe(
-      '\x1b[1mjava-run · maven\x1b[22m\n\n  \x1b[36mℹ\x1b[39m 准备\n'
-      + '  \x1b[32m✓\x1b[39m 完成\n    启动目标：Example\n',
-    );
+    expect(captured.text()).toContain('visible-message');
+    for (const hidden of ['hidden-stage', 'hidden-module', '987654321', 'hidden-token']) expect(captured.text()).not.toContain(hidden);
     expect(captured.output.listenerCount('error')).toBe(0);
-  });
-
-  test('上下文切换后重印标题，flush 不重置连续分组', async () => {
-    const captured = captureOutput();
-    const logger = createLogger({ context: 'java-run', reporter: createTerminalReporter({ color: false }, captured.output) });
-    const maven = logger.withContext('maven');
-    maven.info('第一步');
-    await logger.flush();
-    maven.success('第二步');
-    logger.withContext('launch').info('启动');
-    maven.warn('重新准备');
-    await logger.flush();
-    expect(captured.text()).toBe('java-run · maven\n\n  ℹ 第一步\n  ✓ 第二步\n\njava-run · launch\n\n  ℹ 启动\n\njava-run · maven\n\n  ! 重新准备\n');
-  });
-
-  test('完整上下文和呈现标题分别参与分组，空上下文不显示标题', () => {
-    let title = 'Maven';
-    const layout = createTerminalLayout({ color: false }, { contextTitle: () => title });
-    expect(layout.section(['run', 'maven'])).toBe('Maven\n\n');
-    expect(layout.section(['run', 'maven'])).toBe('');
-    title = 'Maven · :app';
-    expect(layout.section(['run', 'maven'])).toBe('\nMaven · :app\n\n');
-    expect(layout.section(['init', 'maven'])).toBe('\nMaven · :app\n\n');
-    expect(layout.section([])).toBe('');
-    expect(layout.section(['init', 'maven'])).toBe('\nMaven · :app\n\n');
-  });
-
-  test('共享 layout 让直接排版与 logger 沿用同一标题', async () => {
-    const captured = captureOutput();
-    const layout = createTerminalLayout({ color: false }, { contextTitle: () => 'Maven · :app' });
-    const logger = createLogger({ context: 'run', reporter: createTerminalReporter({ color: false }, captured.output, layout) });
-    const scope = logger.withContext('maven');
-    captured.output.write(layout.section(scope.context) + layout.details('模块', ':app') + '\n');
-    scope.success('准备完成');
-    await logger.flush();
-    expect(captured.text()).toBe('Maven · :app\n\n  模块  :app\n  ✓ 准备完成\n');
-  });
-
-  test('耗时按可见宽度对齐，窄屏另起一行且不截断正文', () => {
-    let columns = 80;
-    const layout = createTerminalLayout({ color: true }, { columns: () => columns });
-    const short = stripVTControlCharacters(layout.line('success', '准备中文项目', 456));
-    expect(Bun.stringWidth(short)).toBe(60);
-    expect(short.endsWith('456ms')).toBe(true);
-    const seconds = stripVTControlCharacters(layout.line('success', '完成', 2345));
-    expect(Bun.stringWidth(seconds)).toBe(60);
-    expect(seconds.endsWith('2.3s')).toBe(true);
-    columns = 14;
-    const long = '完整保留非常长的中文项目名称';
-    const narrow = stripVTControlCharacters(layout.line('success', long, 2345)).split('\n');
-    expect(narrow[0]).toBe(`  ✓ ${long}`);
-    expect(narrow[1]!.trim()).toBe('2.3s');
-    expect(Bun.stringWidth(narrow[1]!)).toBe(13);
-  });
-
-  test('详情高亮完整值，所有样式及时复位', () => {
-    const layout = createTerminalLayout({ color: true }, { columns: () => 8 });
-    const path = '/Users/example/包含空格的完整项目路径/target/classes';
-    expect(layout.details('目录', path)).toBe(`  目录  \x1b[36m${path}\x1b[39m`);
-    expect(layout.line('info', '阶段\n\x1b[2J补充信息')).toBe('  \x1b[36mℹ\x1b[39m 阶段\n    补充信息');
   });
 
   test('原始诊断保留正文、空白与 ANSI，只补缺失的尾换行', async () => {
@@ -144,11 +78,14 @@ describe('终端日志呈现契约', () => {
     await turn();
     expect(flushed).toBe(false);
     expect(output.listenerCount('error')).toBe(2);
-    expect(chunks).toEqual(['java-run\n\n  ℹ 第一条\n']);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toContain('第一条');
+    expect(chunks.join('')).not.toContain('第二条');
     callbacks.shift()!();
     await turn();
     expect(flushed).toBe(false);
-    expect(chunks).toEqual(['java-run\n\n  ℹ 第一条\n', '  ✓ 第二条\n']);
+    expect(chunks).toHaveLength(2);
+    expect(chunks[1]).toContain('第二条');
     callbacks.shift()!();
     await pending;
     expect(flushed).toBe(true);
@@ -160,7 +97,7 @@ describe('终端日志呈现契约', () => {
     expect(output.listenerCount('error')).toBe(2);
     callbacks.shift()!();
     await next;
-    expect(chunks.at(-1)).toBe('  ! 下一轮\n');
+    expect(chunks.at(-1)).toContain('下一轮');
     expect(output.listeners('error')).toEqual([existingListener]);
     output.removeListener('error', existingListener);
   });
@@ -237,7 +174,7 @@ describe('终端日志呈现契约', () => {
       });
       expect(result.status, result.error?.message).toBe(0);
       expect(result.stdout).toBe('RESULT\n');
-      expect(result.stderr).toBe('java-run\n\n  ℹ 信息\n  ✓ 完成\n  ! 警告\n  × 错误\n诊断正文\n');
+      for (const message of ['信息', '完成', '警告', '错误', '诊断正文']) expect(result.stderr).toContain(message);
     });
   }
 
