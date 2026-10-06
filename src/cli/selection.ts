@@ -20,8 +20,16 @@ export class SelectionCancelledError extends Error {
 export interface SelectionCandidate {
   value: string;
   label: string;
+  /** 按键菜单完成后的答案，未提供时显示稳定标识 */
+  shortLabel?: string;
   /** 当前候选的补充说明，也参与输入筛选 */
   description?: string;
+}
+
+/** 选择菜单完成后的呈现选项 */
+export interface SelectionPresentation {
+  /** 按键菜单完成后的简短提问，未提供时沿用原提问 */
+  completedQuestion?: string;
 }
 
 /**
@@ -38,6 +46,7 @@ export async function chooseCandidate(
   candidates: readonly SelectionCandidate[],
   question: string,
   policy = resolveTerminalPolicy({}),
+  presentation: SelectionPresentation = {},
 ): Promise<string> {
   if (!candidates.length) throw new Error('没有可供选择的候选项，请使用 --module / --main 或 .java-run.json 指定目标');
   if (policy.input === 'none') {
@@ -77,7 +86,7 @@ export async function chooseCandidate(
   try {
     if (policy.input === 'line' && wasRaw) process.stdin.setRawMode(false);
     const pending = policy.input === 'keys'
-      ? chooseSearch(candidates, question, policy, input, controller.signal)
+      ? chooseSearch(candidates, question, policy, input, controller.signal, presentation)
       : chooseLine(candidates, question, input, controller.signal);
     process.stdin.pipe(input);
     const selected = await pending;
@@ -115,12 +124,14 @@ function chooseSearch(
   policy: TerminalPolicy,
   input: PassThrough,
   signal: AbortSignal,
+  presentation: SelectionPresentation,
 ): Promise<string> {
   const accent = (text: string) => styleText(text, 'accent', policy);
   const identity = (text: string) => text;
   const choices = candidates.map(candidate => ({
     value: candidate.value,
     name: displayText(candidate.label),
+    short: displayText(candidate.shortLabel ?? candidate.value),
     description: candidate.description ? displayText(candidate.description) : undefined,
     searchable: `${candidate.value} ${candidate.label} ${candidate.description ?? ''}`.normalize('NFKC').toLowerCase(),
   }));
@@ -136,7 +147,8 @@ function chooseSearch(
       spinner: { frames: ['?'], interval: 1000 },
       icon: { cursor: '>' },
       style: {
-        answer: (text: string) => styleText(text, 'success', policy), message: identity,
+        answer: (text: string) => styleText(text, 'success', policy),
+        message: (text: string, status: string) => status === 'done' ? displayText(presentation.completedQuestion ?? question) : text,
         error: (text: string) => styleText(text === 'No results found' ? '没有匹配的候选项' : text, 'warning', policy),
         defaultAnswer: identity, help: identity, highlight: accent, key: identity, disabled: identity,
         searchTerm: accent, description: identity,

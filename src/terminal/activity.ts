@@ -2,8 +2,7 @@ import { stripVTControlCharacters } from 'node:util';
 import type { Writable } from 'node:stream';
 import { decodeOutput } from '../process/exec';
 import { resolveTerminalPolicy, type TerminalPolicy } from './policy';
-import { styleText } from './style';
-import { createTerminalLayout, type TerminalLayout } from './layout';
+import { createTerminalLayout, formatDuration, type TerminalLayout } from './layout';
 import { createLinePrefixer } from './line-prefix';
 
 /** 活动执行期间可更新的阶段与原始日志，调用范围限于活动回调 */
@@ -52,7 +51,7 @@ export async function activity<T>(
   const layout = options.layout ?? createTerminalLayout(policy);
   const context = options.context ?? [];
   const prefixOutput = createLinePrefixer('│ ');
-  const border = styleText('│', 'dim', policy) + ' ';
+  const border = '│ ';
   const started = performance.now();
   const live = policy.rewrite && policy.animation && policy.logMode === 'summary';
   type PreviewLine = { data: Buffer; complete: boolean };
@@ -65,6 +64,8 @@ export async function activity<T>(
   let busy = false;
   let writeError: Error | undefined;
   let lastByte = 10;
+  let expansion: Promise<void> | undefined;
+  let expandTimer: ReturnType<typeof setTimeout> | undefined;
   const pending = new Set<Promise<void>>();
   const onError = (error: Error) => { writeError ??= error; };
   output.on('error', onError);
@@ -88,6 +89,14 @@ export async function activity<T>(
     const rows = frame.reduce((sum, line) => sum + Math.max(1, Math.ceil(Bun.stringWidth(line) / width)), 0);
     frame = [];
     return '\r\x1b[2K' + '\x1b[1A\r\x1b[2K'.repeat(Math.max(0, rows - 1));
+  }
+
+  function expand(): Promise<void> {
+    if (expansion) return expansion;
+    if (expandTimer) clearTimeout(expandTimer);
+    const stage = !live && current !== label ? border + layout.line('info', text(current)) + '\n' : '';
+    expansion = write(layout.heading(label, context) + '\n' + stage);
+    return expansion;
   }
 
   function announce(): Promise<void> {
@@ -143,6 +152,10 @@ export async function activity<T>(
   function render(): void {
     if (closed || busy || writeError) return;
     if (live && performance.now() - started < 300) return;
+    if (!expansion) {
+      void expand().then(render).catch(() => {});
+      return;
+    }
     const previous = clear();
     if (live) {
       const width = Math.max(1, (output.columns ?? 80) - 1);
@@ -156,7 +169,7 @@ export async function activity<T>(
       const plainPrefix = text(prefix);
       const colored = visible.startsWith(plainPrefix) ? prefix + visible.slice(plainPrefix.length)
         : visible;
-      void write(previous + [colored, ...frame.slice(1).map(line => styleText(line.slice(0, 1), 'dim', policy) + line.slice(1))].join('\n'))
+      void write(previous + [colored, ...frame.slice(1)].join('\n'))
         .finally(() => { busy = false; }).catch(() => {});
     } else {
       const logs = policy.logMode === 'summary' ? recent().map(line => `${border}${line}\n`).join('') : '';
@@ -169,11 +182,14 @@ export async function activity<T>(
   // 完整日志可能停在字符或行中间，此时插入状态文字会破坏原始输出
   const timer = policy.logMode === 'summary' ? setInterval(render, live ? 160 : 10000) : undefined;
   timer?.unref();
+  if (!live) {
+    expandTimer = setTimeout(() => { void expand().catch(() => {}); }, 300);
+    expandTimer.unref();
+  }
   if (live) output.on('resize', render);
   let failure: unknown;
   let failed = false;
   try {
-    await write(layout.heading(label, context) + '\n');
     return await work({
       stage(next) {
         if (closed) throw new Error('活动已经结束');
@@ -181,7 +197,7 @@ export async function activity<T>(
         current = next;
         lines.length = 0;
         partial.stdout = partial.stderr = undefined;
-        if (!live) {
+        if (!live && expansion) {
           void announce().catch(() => {});
         }
       },
@@ -189,6 +205,8 @@ export async function activity<T>(
         if (closed) throw new Error('活动已经结束');
         lastOutput = performance.now();
         if (policy.logMode === 'full') {
+          if (!data.length) return;
+          await expand();
           await write(prefixOutput.push(data));
           if (data.length) lastByte = data[data.length - 1]!;
         } else {
@@ -203,15 +221,20 @@ export async function activity<T>(
   } finally {
     closed = true;
     if (timer) clearInterval(timer);
+    if (expandTimer) clearTimeout(expandTimer);
     output.removeListener('resize', render);
     await Promise.allSettled(pending);
     const exitCode = failure && typeof failure === 'object' && 'exitCode' in failure ? failure.exitCode : undefined;
-    const outcome = failed ? exitCode === 130 || exitCode === 143 ? '已取消' : '失败' : '完成';
-    const type = outcome === '已取消' ? 'warn' : failed ? 'error' : 'success';
+    const cancelled = failed && (exitCode === 130 || exitCode === 143);
+    const type = cancelled ? 'warn' : failed ? 'error' : 'success';
     try {
       if (!writeError) {
         const newline = policy.logMode === 'full' && lastByte !== 10 ? '\n' : '';
-        await write(clear() + newline + styleText('└', 'dim', policy) + ' ' + layout.line(type, outcome, { durationMs: performance.now() - started }) + '\n');
+        const durationMs = performance.now() - started;
+        const result = expansion
+          ? '└ ' + layout.line(type, `${cancelled ? 'Cancelled' : failed ? 'Failed' : 'Done'} in ${formatDuration(durationMs)}`, { indicator: false })
+          : layout.line(type, label + (cancelled ? '（已取消）' : failed ? '（失败）' : ''), { context, durationMs, indicator: false });
+        await write(clear() + newline + result + '\n');
       }
     } catch (error) {
       onError(error instanceof Error ? error : new Error(String(error)));

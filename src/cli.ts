@@ -52,15 +52,15 @@ export async function main(argv: string[]): Promise<number> {
         const candidates = await presentation.run('读取模块候选', execute => tool === 'gradle'
           ? discoverGradleProjects(config, workspacePath, execute) : discoverMavenProjects(config, workspacePath, execute));
         config.module = candidates.length === 1 ? candidates[0]!.value
-          : await chooseCandidate(candidates, '选择启动项目（库模块可能没有 main）', policy);
+          : await chooseCandidate(candidates, '选择启动项目（库模块可能没有 main）', policy, { completedQuestion: '启动项目' });
       }
     }
     const project = await presentation.run('项目准备', execute => tool === 'maven'
       ? prepareMaven(config, workspacePath, execute) : prepareGradle(config, workspacePath, execute));
     const selectMainClass = policy.input !== 'none'
       ? (candidates: readonly string[]) => chooseCandidate(candidates.map(value => ({
-        value, label: value.split('.').at(-1)!, description: value,
-      })), '选择启动主类', policy)
+        value, label: value.split('.').at(-1)!, shortLabel: value.split('.').at(-1)!, description: value,
+      })), '选择启动主类', policy, { completedQuestion: '启动主类' })
       : undefined;
     const mainClass = await resolveMainClass(config, project, selectMainClass);
     if (configWriter) {
@@ -71,10 +71,18 @@ export async function main(argv: string[]): Promise<number> {
     const launch = await presentation.run('生成运行类路径', execute =>
       createLaunchCommand({ ...config, mainClass }, project, workspacePath, undefined, execute));
     await logger.flush();
-    await writeTerminalText('\n' + layout.details('入口', launch.mainClass));
-    logger.info('启动应用', { mainClass: launch.mainClass, command: launch.command });
-    await logger.flush();
-    exitCode = (await runCommand(launch)).exitCode;
+    await writeTerminalText('\n' + layout.details('启动应用', launch.mainClass, logger.context));
+    const result = await runCommand(launch);
+    exitCode = result.exitCode;
+    if (exitCode !== 0) {
+      // 继承终端的应用可能未以换行结束，显示失败也不能覆盖其退出码
+      try { await writeTerminalText(''); } catch {}
+    }
+    if (result.signal === 'SIGINT' || result.signal === 'SIGTERM') {
+      logger.warn(`应用已中断（${result.signal}）`, { exitCode, signal: result.signal });
+    } else if (exitCode !== 0) {
+      logger.error(`应用退出，退出码 ${exitCode}`, { exitCode, signal: result.signal });
+    }
     return exitCode;
   } catch (error) {
     if (error instanceof SelectionCancelledError) {

@@ -7,15 +7,15 @@ import { styleText } from './style';
 export interface TerminalLayout {
   /** 返回任务标题和可选来源标签，不含末尾换行；控制字符和换行会被清理 */
   heading(label: string, context?: readonly string[]): string;
-  /** 返回带状态符号和来源标签的正文，不含末尾换行；indicator 可替换状态符号 */
+  /** 返回带来源标签的正文，不含末尾换行；indicator 可替换状态符号，false 隐藏符号 */
   line(type: LogRecord['type'], message: string, options?: {
     context?: readonly string[];
     /** 活动已用时间，单位为毫秒 */
     durationMs?: number;
-    indicator?: string;
+    indicator?: string | false;
   }): string;
   /** 返回标签和高亮值，不截断路径等完整内容 */
-  details(label: string, value: string): string;
+  details(label: string, value: string, context?: readonly string[]): string;
 }
 
 const icons = { debug: '·', info: 'ℹ', success: '✓', warn: '!', error: '×' } as const;
@@ -26,6 +26,11 @@ function visibleText(value: string): string {
 
 function singleLine(value: string): string {
   return visibleText(value).replace(/\n/g, ' ');
+}
+
+/** 将毫秒耗时转换为紧凑的可读文字 */
+export function formatDuration(durationMs: number): string {
+  return durationMs < 1000 ? `${Math.round(durationMs)}ms` : `${(durationMs / 1000).toFixed(1).replace(/\.0$/, '')}s`;
 }
 
 /**
@@ -45,19 +50,19 @@ export function createTerminalLayout(
 
   function withDuration(line: string, durationMs?: number): string {
     if (durationMs === undefined || !Number.isFinite(durationMs) || durationMs < 0) return line;
-    const duration = durationMs < 1000 ? `${Math.round(durationMs)}ms` : `${(durationMs / 1000).toFixed(1).replace(/\.0$/, '')}s`;
-    return line + '  ' + styleText(duration, 'dim', policy);
+    return line + '  ' + styleText(formatDuration(durationMs), 'dim', policy);
   }
 
   return {
-    heading: (label, context = []) => contextPrefix(context) + singleLine(label),
+    heading: (label, context = []) => contextPrefix(context) + styleText(singleLine(label), 'bold', policy),
     line(type, message, { context = [], durationMs, indicator } = {}) {
       const tone = type === 'success' ? 'success' : type === 'warn' ? 'warning' : type === 'error' ? 'error' : 'accent';
-      const icon = singleLine(indicator ?? icons[type]).trim() || icons[type];
-      const [first, ...rest] = visibleText(message).split('\n');
-      const line = withDuration(`${contextPrefix(context)}${styleText(icon, tone, policy)} ${first}`, durationMs);
+      const [first = '', ...rest] = visibleText(message).split('\n');
+      const body = indicator === false ? styleText(first, tone, policy)
+        : `${styleText(singleLine(indicator ?? icons[type]).trim() || icons[type], tone, policy)} ${first}`;
+      const line = withDuration(contextPrefix(context) + body, durationMs);
       return [line, ...rest.map(value => `  ${value}`)].join('\n');
     },
-    details: (label, value) => `${singleLine(label)}  ${styleText(singleLine(value), 'accent', policy)}`,
+    details: (label, value, context = []) => contextPrefix(context) + `${styleText(singleLine(label), 'bold', policy)}  ${styleText(singleLine(value), 'accent', policy)}`,
   };
 }
