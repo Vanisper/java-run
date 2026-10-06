@@ -146,7 +146,9 @@ java-run --cwd examples/multiple-main \
 `--no-interactive` 禁止询问，存在歧义时需要显式指定目标或入口。
 非空的 `NO_COLOR` 或 `FORCE_COLOR=0` 关闭 java-run 自身的颜色，不影响交互方式或子进程的配色设置。
 
-菜单、进度和构建日志写入 stderr；Java 应用启动后直接继承 stdin、stdout 和 stderr。
+菜单、进度和构建日志写入 stderr；Java 应用始终直接继承 stdin。
+普通终端中的应用输出通过管道实时展示，`summary` 也不会省略应用输出；使用 `--plain` 或重定向任一输出流时，应用直接继承原始 stdout 和 stderr。
+需要原生 TTY 能力的应用请使用 `--plain`。
 
 ## 参数放在哪一层
 

@@ -4,13 +4,20 @@ import { decodeOutput } from '../process/exec';
 import { resolveTerminalPolicy, type TerminalPolicy } from './policy';
 import { createTerminalLayout, formatDuration, type TerminalLayout } from './layout';
 import { createLinePrefixer } from './line-prefix';
+import type { LogType } from '../logging/logger';
 
 /** 活动执行期间可更新的阶段与原始日志，调用范围限于活动回调 */
 export interface ActivityFeedback {
   /** 更新当前步骤；不代表整个活动已经完成 */
   stage(label: string): void;
-  /** 接收一个流的原始字节；完整日志模式等待输出写入后返回 */
-  output(chunk: { stream: 'stdout' | 'stderr'; data: Buffer }): Promise<void>;
+  /** 接收原始字节；mode 可覆盖默认显示模式，完整模式等待写入后返回 */
+  output(chunk: { stream: 'stdout' | 'stderr'; data: Buffer }, mode?: 'summary' | 'full'): Promise<void>;
+  /** 在当前组内追加一条日志 */
+  log(type: LogType, message: string): Promise<void>;
+  /** 在当前组内追加标签与关键值 */
+  detail(label: string, value: string): Promise<void>;
+  /** 暂停活动重绘并执行交互；回调收到组内前缀，交互与命令须串行执行 */
+  interact<T>(work: (linePrefix: string) => Promise<T>): Promise<T>;
 }
 
 type ActivityOutput = Writable & { columns?: number; rows?: number };
@@ -44,14 +51,23 @@ export async function activity<T>(
   work: (feedback: ActivityFeedback) => Promise<T>,
   policy: TerminalPolicy = resolveTerminalPolicy({}),
   output: ActivityOutput = process.stderr,
-  options: { context?: readonly string[]; layout?: TerminalLayout } = {},
+  options: {
+    context?: readonly string[];
+    layout?: TerminalLayout;
+    /** 开始执行前展开组，即使工作很快结束 */
+    expanded?: boolean;
+    /** 覆盖取消判定，默认使用约定退出码 130 / 143 */
+    isCancelled?: (error: unknown) => boolean;
+    /** 失败时补充组内诊断；诊断失败不替换原异常 */
+    onFailure?: (error: unknown, feedback: ActivityFeedback) => Promise<void>;
+  } = {},
 ): Promise<T> {
   if (activeOutputs.has(output)) throw new Error('同一终端不能同时展示多个活动');
   activeOutputs.add(output);
   const layout = options.layout ?? createTerminalLayout(policy);
   const context = options.context ?? [];
-  const prefixOutput = createLinePrefixer('│ ');
   const border = '│ ';
+  const prefixOutput = createLinePrefixer(border);
   const started = performance.now();
   const live = policy.rewrite && policy.animation && policy.logMode === 'summary';
   type PreviewLine = { data: Buffer; complete: boolean };
@@ -66,6 +82,7 @@ export async function activity<T>(
   let lastByte = 10;
   let expansion: Promise<void> | undefined;
   let expandTimer: ReturnType<typeof setTimeout> | undefined;
+  let suspended = 0;
   const pending = new Set<Promise<void>>();
   const onError = (error: Error) => { writeError ??= error; };
   output.on('error', onError);
@@ -104,6 +121,26 @@ export async function activity<T>(
     lastByte = 10;
     prefixOutput.reset();
     return write(newline + border + layout.line('info', text(current)) + '\n');
+  }
+
+  async function boundary(): Promise<void> {
+    await expand();
+    await Promise.allSettled(pending);
+    const separator = clear() + (lastByte !== 10 ? '\n' : '');
+    if (separator) await write(separator);
+    lastByte = 10;
+    prefixOutput.reset();
+  }
+
+  async function message(value: string): Promise<void> {
+    if (closed) throw new Error('活动已经结束');
+    suspended++;
+    try {
+      await boundary();
+      await write(value.split('\n').map(line => border + line).join('\n') + '\n');
+    } finally {
+      suspended--;
+    }
   }
 
   function append(stream: 'stdout' | 'stderr', data: Buffer): void {
@@ -150,7 +187,7 @@ export async function activity<T>(
   }
 
   function render(): void {
-    if (closed || busy || writeError) return;
+    if (closed || busy || suspended || writeError) return;
     if (live && performance.now() - started < 300) return;
     if (!expansion) {
       void expand().then(render).catch(() => {});
@@ -189,34 +226,63 @@ export async function activity<T>(
   if (live) output.on('resize', render);
   let failure: unknown;
   let failed = false;
-  try {
-    return await work({
-      stage(next) {
-        if (closed) throw new Error('活动已经结束');
-        if (next === current) return;
-        current = next;
+  const feedback: ActivityFeedback = {
+    stage(next) {
+      if (closed) throw new Error('活动已经结束');
+      if (next === current) return;
+      current = next;
+      lines.length = 0;
+      partial.stdout = partial.stderr = undefined;
+      if (!live && expansion) {
+        void announce().catch(() => {});
+      }
+    },
+    async output({ stream, data }, mode = policy.logMode) {
+      if (closed) throw new Error('活动已经结束');
+      lastOutput = performance.now();
+      if (mode === 'full') {
+        if (!data.length) return;
+        suspended++;
+        try {
+          await expand();
+          await Promise.allSettled(pending);
+          const previous = clear();
+          if (previous) await write(previous);
+          await write(prefixOutput.push(data));
+          lastByte = data[data.length - 1]!;
+        } finally {
+          suspended--;
+        }
+      } else {
+        append(stream, data);
+      }
+    },
+    log: (type, value) => message(layout.line(type, value)),
+    detail: (label, value) => message(layout.details(label, value)),
+    async interact(work) {
+      if (closed) throw new Error('活动已经结束');
+      suspended++;
+      try {
+        await boundary();
+        return await work(border);
+      } finally {
         lines.length = 0;
         partial.stdout = partial.stderr = undefined;
-        if (!live && expansion) {
-          void announce().catch(() => {});
-        }
-      },
-      async output({ stream, data }) {
-        if (closed) throw new Error('活动已经结束');
+        lastByte = 10;
+        prefixOutput.reset();
         lastOutput = performance.now();
-        if (policy.logMode === 'full') {
-          if (!data.length) return;
-          await expand();
-          await write(prefixOutput.push(data));
-          if (data.length) lastByte = data[data.length - 1]!;
-        } else {
-          append(stream, data);
-        }
-      },
-    });
+        suspended--;
+      }
+    },
+  };
+  try {
+    if (options.expanded) await expand();
+    return await work(feedback);
   } catch (error) {
     failed = true;
     failure = error;
+    suspended++;
+    try { await options.onFailure?.(error, feedback); } catch { /* 保留原始失败 */ }
     throw error;
   } finally {
     closed = true;
@@ -225,14 +291,15 @@ export async function activity<T>(
     output.removeListener('resize', render);
     await Promise.allSettled(pending);
     const exitCode = failure && typeof failure === 'object' && 'exitCode' in failure ? failure.exitCode : undefined;
-    const cancelled = failed && (exitCode === 130 || exitCode === 143);
+    const cancelled = failed && (options.isCancelled?.(failure) ?? (exitCode === 130 || exitCode === 143));
     const type = cancelled ? 'warn' : failed ? 'error' : 'success';
     try {
       if (!writeError) {
-        const newline = policy.logMode === 'full' && lastByte !== 10 ? '\n' : '';
+        const newline = lastByte !== 10 ? '\n' : '';
         const durationMs = performance.now() - started;
+        const code = typeof exitCode === 'number' && exitCode !== 0 ? ` (exit code ${exitCode})` : '';
         const result = expansion
-          ? '└ ' + layout.line(type, `${cancelled ? 'Cancelled' : failed ? 'Failed' : 'Done'} in ${formatDuration(durationMs)}`, { indicator: false })
+          ? '└ ' + layout.line(type, `${cancelled ? 'Cancelled' : failed ? 'Failed' : 'Done'} in ${formatDuration(durationMs)}${code}`, { indicator: false })
           : layout.line(type, label + (cancelled ? '（已取消）' : failed ? '（失败）' : ''), { context, durationMs, indicator: false });
         await write(clear() + newline + result + '\n');
       }

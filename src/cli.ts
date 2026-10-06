@@ -10,18 +10,18 @@ import { chooseCandidate, SelectionCancelledError } from './cli/selection';
 import { toProjectConfig } from './cli/config';
 import { createProjectConfigWriter } from './cli/init';
 import { createLaunchCommand, resolveMainClass } from './core/launch';
-import { CommandError, runCommand } from './process/exec';
+import { CommandError } from './process/exec';
 import { resolveTerminalPolicy } from './terminal/policy';
 import { createLogger } from './logging/logger';
 import { createTerminalReporter, writeTerminalText } from './terminal/log-reporter';
 import { createTerminalLayout } from './terminal/layout';
-import { createPreparationPresentation } from './cli/preparation';
+import { createCliPresentation } from './cli/presentation';
 import { version } from '../package.json';
 
 /** 执行一个 CLI 请求，保留 Java 或构建工具的失败退出码 */
 export async function main(argv: string[]): Promise<number> {
   let workspace: string | undefined;
-  let presentation: ReturnType<typeof createPreparationPresentation> | undefined;
+  let presentation: ReturnType<typeof createCliPresentation> | undefined;
   let logger = createLogger({ context: 'java-run', reporter: createTerminalReporter({ color: false }) });
   let exitCode = 0;
   try {
@@ -43,48 +43,49 @@ export async function main(argv: string[]): Promise<number> {
         notes: [...plan.notes, '这是静态预览，未验证有效项目模型、主类和依赖文件'] }, null, 2) + '\n');
       return 0;
     }
-    presentation = createPreparationPresentation(policy, logger, layout);
+    presentation = createCliPresentation(policy, logger, layout);
     workspace = mkdtempSync(join(tmpdir(), 'java-run-'));
     const workspacePath = workspace;
     if (!config.module && (config.action === 'init' || policy.input !== 'none')) {
       const discoverModules = tool === 'gradle' || await needsMavenModule(config);
       if (discoverModules) {
-        const candidates = await presentation.run('读取模块候选', execute => tool === 'gradle'
-          ? discoverGradleProjects(config, workspacePath, execute) : discoverMavenProjects(config, workspacePath, execute));
-        config.module = candidates.length === 1 ? candidates[0]!.value
-          : await chooseCandidate(candidates, '选择启动项目（库模块可能没有 main）', policy, { completedQuestion: '启动项目' });
+        config.module = await presentation.run('选择启动项目', async (execute, feedback) => {
+          const candidates = await (tool === 'gradle'
+            ? discoverGradleProjects(config, workspacePath, execute) : discoverMavenProjects(config, workspacePath, execute));
+          if (candidates.length === 1) {
+            await feedback.detail('启动项目', candidates[0]!.value);
+            return candidates[0]!.value;
+          }
+          return feedback.interact(linePrefix => chooseCandidate(candidates, '选择启动项目（库模块可能没有 main）', policy,
+            { completedQuestion: '启动项目', linePrefix }));
+        });
       }
     }
-    const project = await presentation.run('项目准备', execute => tool === 'maven'
-      ? prepareMaven(config, workspacePath, execute) : prepareGradle(config, workspacePath, execute));
-    const selectMainClass = policy.input !== 'none'
-      ? (candidates: readonly string[]) => chooseCandidate(candidates.map(value => ({
-        value, label: value.split('.').at(-1)!, shortLabel: value.split('.').at(-1)!, description: value,
-      })), '选择启动主类', policy, { completedQuestion: '启动主类' })
-      : undefined;
-    const mainClass = await resolveMainClass(config, project, selectMainClass);
-    if (configWriter) {
-      configWriter.save(toProjectConfig(config, tool, mainClass));
-      logger.success(`已保存 ${configWriter.path}\n在该工作区运行 java-run 即可启动 ${mainClass}`, { mainClass, configPath: configWriter.path });
-      return 0;
-    }
-    const launch = await presentation.run('生成运行类路径', execute =>
-      createLaunchCommand({ ...config, mainClass }, project, workspacePath, undefined, execute));
-    await logger.flush();
-    await writeTerminalText('\n' + layout.details('启动应用', launch.mainClass, logger.context));
-    const result = await runCommand(launch);
-    exitCode = result.exitCode;
-    if (exitCode !== 0) {
-      // 继承终端的应用可能未以换行结束，显示失败也不能覆盖其退出码
-      try { await writeTerminalText(''); } catch {}
-    }
-    if (result.signal === 'SIGINT' || result.signal === 'SIGTERM') {
-      logger.warn(`应用已中断（${result.signal}）`, { exitCode, signal: result.signal });
-    } else if (exitCode !== 0) {
-      logger.error(`应用退出，退出码 ${exitCode}`, { exitCode, signal: result.signal });
-    }
+    const launch = await presentation.run('项目准备', async (execute, feedback) => {
+      const project = await (tool === 'maven'
+        ? prepareMaven(config, workspacePath, execute) : prepareGradle(config, workspacePath, execute));
+      const selectMainClass = policy.input !== 'none'
+        ? (candidates: readonly string[]) => feedback.interact(linePrefix => chooseCandidate(candidates.map(value => {
+          const label = value.split('.').at(-1)!;
+          return { value, label, shortLabel: label, description: value };
+        }), '选择启动主类', policy, { completedQuestion: '启动主类', linePrefix }))
+        : undefined;
+      const mainClass = await resolveMainClass(config, project, selectMainClass);
+      if (configWriter) {
+        configWriter.save(toProjectConfig(config, tool, mainClass));
+        await feedback.detail('已保存', configWriter.path);
+        return;
+      }
+      return createLaunchCommand({ ...config, mainClass }, project, workspacePath, undefined, execute);
+    });
+    if (!launch) return 0;
+    exitCode = await presentation.launch(launch);
     return exitCode;
   } catch (error) {
+    if (presentation?.hasReported(error)) {
+      exitCode = error instanceof CommandError || error instanceof SelectionCancelledError ? error.exitCode || 1 : 1;
+      return exitCode;
+    }
     if (error instanceof SelectionCancelledError) {
       logger.warn('已取消选择');
       exitCode = error.exitCode;

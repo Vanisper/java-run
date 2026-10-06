@@ -26,10 +26,12 @@ export interface SelectionCandidate {
   description?: string;
 }
 
-/** 选择菜单完成后的呈现选项 */
+/** 选择菜单的呈现选项 */
 export interface SelectionPresentation {
   /** 按键菜单完成后的简短提问，未提供时沿用原提问 */
   completedQuestion?: string;
+  /** 提问与确认行的前缀，纯文本菜单也用于候选和输入提示 */
+  linePrefix?: string;
 }
 
 /**
@@ -87,7 +89,7 @@ export async function chooseCandidate(
     if (policy.input === 'line' && wasRaw) process.stdin.setRawMode(false);
     const pending = policy.input === 'keys'
       ? chooseSearch(candidates, question, policy, input, controller.signal, presentation)
-      : chooseLine(candidates, question, input, controller.signal);
+      : chooseLine(candidates, question, input, controller.signal, presentation);
     process.stdin.pipe(input);
     const selected = await pending;
     if (cancellation) throw cancellation;
@@ -128,6 +130,7 @@ function chooseSearch(
 ): Promise<string> {
   const accent = (text: string) => styleText(text, 'accent', policy);
   const identity = (text: string) => text;
+  const linePrefix = displayText(presentation.linePrefix ?? '');
   const choices = candidates.map(candidate => ({
     value: candidate.value,
     name: displayText(candidate.label),
@@ -143,8 +146,8 @@ function chooseSearch(
       return choices.filter(choice => words.every(word => choice.searchable.includes(word)));
     },
     theme: {
-      prefix: { idle: accent('?'), done: styleText('✓', 'success', policy) },
-      spinner: { frames: ['?'], interval: 1000 },
+      prefix: { idle: linePrefix + accent('?'), done: linePrefix + styleText('✓', 'success', policy) },
+      spinner: { frames: [linePrefix + '?'], interval: 1000 },
       icon: { cursor: '>' },
       style: {
         answer: (text: string) => styleText(text, 'success', policy),
@@ -163,7 +166,9 @@ function chooseLine(
   question: string,
   input: PassThrough,
   signal: AbortSignal,
+  presentation: SelectionPresentation,
 ): Promise<string> {
+  const linePrefix = displayText(presentation.linePrefix ?? '');
   return new Promise((resolve, reject) => {
     const reader = createInterface({ input, terminal: false });
     let settled = false;
@@ -190,7 +195,7 @@ function chooseLine(
         finish(candidates[index]!.value);
         return;
       }
-      process.stderr.write(`请输入 1 到 ${candidates.length} 之间的序号\n`);
+      process.stderr.write(`${linePrefix}请输入 1 到 ${candidates.length} 之间的序号\n`);
       prompt();
     }
 
@@ -203,14 +208,14 @@ function chooseLine(
     }
 
     function prompt(): void {
-      process.stderr.write(`选择 [1-${candidates.length}]：`);
+      process.stderr.write(`${linePrefix}选择 [1-${candidates.length}]：`);
     }
 
     reader.on('line', onLine);
     reader.once('close', onClose);
     signal.addEventListener('abort', onAbort, { once: true });
-    process.stderr.write(`${displayText(question)}\n`);
-    candidates.forEach((candidate, index) => process.stderr.write(`  ${index + 1}. ${displayText(candidate.label)}${candidate.description ? ` — ${displayText(candidate.description)}` : ''}\n`));
+    process.stderr.write(`${linePrefix}${displayText(question)}\n`);
+    candidates.forEach((candidate, index) => process.stderr.write(`${linePrefix}  ${index + 1}. ${displayText(candidate.label)}${candidate.description ? ` — ${displayText(candidate.description)}` : ''}\n`));
     prompt();
   });
 }

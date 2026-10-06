@@ -1,14 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 
-const modulePath = new URL('../src/cli/preparation.ts', import.meta.url).href;
+const modulePath = new URL('../src/cli/presentation.ts', import.meta.url).href;
 const execPath = new URL('../src/process/exec.ts', import.meta.url).href;
 
 function run(logMode: 'summary' | 'full', invalidMetadata = false) {
   return spawnSync(process.execPath, ['-e', `
-    import { createPreparationPresentation } from ${JSON.stringify(modulePath)};
+    import { createCliPresentation } from ${JSON.stringify(modulePath)};
     import { CommandError } from ${JSON.stringify(execPath)};
-    const ui = createPreparationPresentation({ input: 'none', rewrite: false, color: false, animation: false, logMode: '${logMode}' });
+    const ui = createCliPresentation({ input: 'none', rewrite: false, color: false, animation: false, logMode: '${logMode}' });
     const validationError = new Error('元数据校验失败');
     let commandExitCode;
     const spec = { command: process.execPath, args: ['-e', 'process.stdout.write("BUILD-DIAGNOSTIC\\\\n"); process.exit(${invalidMetadata ? 0 : 7})'], cwd: process.cwd(), stage: '构建' };

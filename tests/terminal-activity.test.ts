@@ -71,6 +71,64 @@ describe('终端活动生命周期', () => {
     expect(output.listenerCount('resize')).toBe(0);
   });
 
+  test('交互期间暂停 summary 重绘，返回后继续工作并恢复预览', async () => {
+    const output = new TerminalOutput();
+    const selected = { target: 'application' };
+    const result = await activity('准备', async feedback => {
+      await feedback.output({ stream: 'stdout', data: Buffer.from('BEFORE_INTERACTION\n') });
+      await delay(400);
+      expect(output.text).toContain('BEFORE_INTERACTION');
+      const value = await feedback.interact(async () => {
+        const before = output.text;
+        output.emit('resize');
+        await delay(400);
+        expect(output.text).toBe(before);
+        return selected;
+      });
+      expect(value).toBe(selected);
+      const resumed = output.text.length;
+      await feedback.output({ stream: 'stdout', data: Buffer.from('AFTER_INTERACTION\n') });
+      output.emit('resize');
+      await delay(200);
+      expect(output.text.slice(resumed)).toContain('AFTER_INTERACTION');
+      return value;
+    }, rich, output);
+    expect(result).toBe(selected);
+    expect(output.listenerCount('resize')).toBe(0);
+    expect(output.listenerCount('error')).toBe(0);
+  });
+
+  test('交互取消原样传递异常，清理活动监听且没有迟到输出', async () => {
+    const output = new TerminalOutput();
+    const onResize = () => {};
+    const onError = () => {};
+    output.on('resize', onResize);
+    output.on('error', onError);
+    const cancellation = Object.assign(new Error('取消交互'), { exitCode: 130 });
+    const inputListeners = process.stdin.listenerCount('data');
+    await expect(activity('准备', async feedback => {
+      await feedback.interact(async () => {
+        const before = output.text;
+        output.emit('resize');
+        await delay(400);
+        expect(output.text).toBe(before);
+        throw cancellation;
+      });
+    }, rich, output)).rejects.toBe(cancellation);
+    expect(output.listeners('resize')).toEqual([onResize]);
+    expect(output.listeners('error')).toEqual([onError]);
+    expect(process.stdin.listenerCount('data')).toBe(inputListeners);
+    const finished = output.text;
+    output.emit('resize');
+    await delay(200);
+    expect(output.text).toBe(finished);
+    expect(await activity('再次使用', async () => 42, rich, output)).toBe(42);
+    expect(output.listeners('resize')).toEqual([onResize]);
+    expect(output.listeners('error')).toEqual([onError]);
+    output.removeListener('resize', onResize);
+    output.removeListener('error', onError);
+  });
+
   for (const color of [false, true]) test(`窄屏裁剪宽字符和日志控制序列（${color ? '有色' : '无色'}）`, async () => {
     const output = new TerminalOutput();
     output.columns = 12;

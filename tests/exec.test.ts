@@ -10,6 +10,7 @@ import type { CommandSpec } from '../src/core/types';
 
 const temporaryDirectories: string[] = [];
 const processChild = fileURLToPath(new URL('./helpers/process-child.ts', import.meta.url));
+const execModule = new URL('../src/process/exec.ts', import.meta.url).href;
 
 function temporaryDirectory(): string {
   const directory = mkdtempSync(path.join(tmpdir(), 'java-run exec # '));
@@ -19,6 +20,30 @@ function temporaryDirectory(): string {
 
 function command(source: string, cwd = process.cwd(), args: string[] = []): CommandSpec {
   return { command: process.execPath, args: ['-e', source, '--', ...args], cwd, stage: '进程测试' };
+}
+
+function streamingRunner(directory: string): string[] {
+  const batch = path.join(directory, 'stream tree.cmd');
+  if (process.platform === 'win32') writeFileSync(batch, `@echo off\r\n"${process.execPath}" "${processChild}" tree "${directory}"\r\n`);
+  const spec: CommandSpec = {
+    command: process.platform === 'win32' ? batch : process.execPath,
+    args: process.platform === 'win32' ? [] : [processChild, 'tree', directory],
+    cwd: directory, stage: '流式信号转发',
+  };
+  return ['-e', `
+    import { existsSync, writeFileSync } from 'node:fs';
+    import { runCommand } from ${JSON.stringify(execModule)};
+    const running = runCommand(${JSON.stringify(spec)}, { onOutput() {} });
+    if (process.platform === 'win32') {
+      const ready = setInterval(() => {
+        if (existsSync(${JSON.stringify(path.join(directory, 'leaf.pid'))})) {
+          clearInterval(ready);
+          process.emit('SIGTERM');
+        }
+      }, 10);
+    }
+    writeFileSync(${JSON.stringify(path.join(directory, 'result.json'))}, JSON.stringify(await running));
+  `];
 }
 
 function isAlive(pid: number): boolean {
@@ -102,10 +127,10 @@ describe('异步执行', () => {
     expect(decodeOutput(stderr)).toBe(result.stderr);
   });
 
-  test('缓慢输出回调暂停管道并串行交付，子进程无法提前排空大输出', async () => {
+  for (const capture of [true, false]) test(`${capture ? '捕获' : '纯流式'}输出保持背压和顺序，纯流式不受捕获上限影响`, async () => {
     const directory = temporaryDirectory();
     const written = path.join(directory, 'written');
-    const byteLength = 4 * 1024 * 1024;
+    const byteLength = (capture ? 4 : 20) * 1024 * 1024;
     const observed: Buffer[] = [];
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
@@ -118,7 +143,8 @@ describe('异步执行', () => {
       writeFileSync(${JSON.stringify(written)}, 'done');
     `;
     const running = runCommand(command(source), {
-      capture: true,
+      capture,
+      maxBuffer: capture ? undefined : 1,
       async onOutput(output) {
         active++;
         maximumActive = Math.max(maximumActive, active);
@@ -142,17 +168,18 @@ describe('异步执行', () => {
     expect(result.exitCode).toBe(0);
     expect(maximumActive).toBe(1);
     expect(Buffer.concat(observed)).toEqual(Buffer.alloc(byteLength, 120));
-    expect(result.stdout.length).toBe(byteLength);
+    expect(result.stdout.length).toBe(capture ? byteLength : 0);
+    expect(result.stderr).toBe('');
     expect(existsSync(written)).toBe(true);
   });
 
-  test('子进程退出后仍等待输出回调，回调修改副本不影响捕获诊断', async () => {
+  for (const capture of [true, false]) test(`${capture ? '捕获' : '纯流式'}命令结束前等待回调，修改副本不影响捕获诊断`, async () => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     let observed = false;
     let completed = false;
     const running = runCommand(command('process.stdout.write("original")'), {
-      capture: true,
+      capture,
       async onOutput(output) {
         output.data.fill(120);
         observed = true;
@@ -167,10 +194,10 @@ describe('异步执行', () => {
       release();
       await running;
     }
-    expect((await running).stdout).toBe('original');
+    expect((await running).stdout).toBe(capture ? 'original' : '');
   });
 
-  test.each(['throw', 'reject'] as const)('输出回调 %s 时清理进程并保留原始原因和诊断', async mode => {
+  for (const capture of [true, false]) test.each(['throw', 'reject'] as const)(`${capture ? '捕获' : '纯流式'}输出回调 %s 时清理进程并保留原始原因`, async mode => {
     const directory = temporaryDirectory();
     const pidFile = path.join(directory, 'child.pid');
     const leafPidFile = path.join(directory, 'leaf.pid');
@@ -192,7 +219,7 @@ describe('异步执行', () => {
     `;
     let observed = 0;
     const result = await runCommand(command(source), {
-      capture: true,
+      capture,
       onOutput() {
         observed++;
         if (mode === 'throw') throw failure;
@@ -201,18 +228,37 @@ describe('异步执行', () => {
     }).catch(error => error);
     expect(result).toBeInstanceOf(CommandError);
     expect(result.cause).toBe(failure);
-    expect(result.stderr).toBe('original diagnostic\n');
+    expect(result.stderr).toBe(capture ? 'original diagnostic\n' : '');
+    expect(result.stdout).toBe('');
     expect(observed).toBe(1);
     expect(signals.map(signal => process.listenerCount(signal))).toEqual(original);
     await waitUntil(() => !isAlive(Number(readFileSync(pidFile, 'utf8'))));
     await waitUntil(() => !isAlive(Number(readFileSync(leafPidFile, 'utf8'))));
   });
 
-  test('没有捕获输出时拒绝注册输出回调且不启动命令', async () => {
-    const marker = path.join(temporaryDirectory(), 'started');
-    const source = `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'started');`;
-    await expect(runCommand(command(source), { onOutput() {} })).rejects.toThrow('onOutput 仅可与 capture');
-    expect(existsSync(marker)).toBe(false);
+  test('纯流式分别转交 stdout 和 stderr，继承 stdin 并保留非零退出码', () => {
+    const input = 'stdin 中文 # value\n';
+    const child = command(`
+      import { readFileSync, writeFileSync } from 'node:fs';
+      writeFileSync(1, readFileSync(0));
+      writeFileSync(2, Buffer.from('stream diagnostic'));
+      process.exitCode = 7;
+    `);
+    const source = `
+      import { runCommand } from ${JSON.stringify(execModule)};
+      const chunks = { stdout: [], stderr: [] };
+      const result = await runCommand(${JSON.stringify(child)}, {
+        onOutput({stream, data}) { chunks[stream].push(data); },
+      });
+      process.stdout.write(JSON.stringify({result,
+        stdout: Buffer.concat(chunks.stdout).toString(), stderr: Buffer.concat(chunks.stderr).toString()}));
+    `;
+    const runner = spawnSync(process.execPath, ['-e', source], { input, encoding: 'utf8', timeout: 5000 });
+    expect(runner.status, runner.error?.message || runner.stderr).toBe(0);
+    expect(JSON.parse(runner.stdout)).toEqual({
+      result: { exitCode: 7, signal: null, stdout: '', stderr: '' }, stdout: input, stderr: 'stream diagnostic',
+    });
+    expect(runner.stderr).toBe('');
   });
 
   test('参数中的空格、中文和 shell 字符保持原边界', async () => {
@@ -293,9 +339,9 @@ describe('异步执行', () => {
 });
 
 describe.skipIf(process.platform === 'win32')('Unix 进程树清理', () => {
-  test.each(['SIGTERM', 'SIGINT'] as const)('%s 转发到独立子进程组且不遗留 JVM 式后代', async signal => {
+  for (const stream of [false, true]) test.each(['SIGTERM', 'SIGINT'] as const)(`${stream ? '纯流式' : '继承终端'}下 %s 转发到独立子进程组且不遗留 JVM 式后代`, async signal => {
     const directory = temporaryDirectory();
-    const runner = spawn(process.execPath, [processChild, 'runner', directory], { stdio: 'ignore' });
+    const runner = spawn(process.execPath, stream ? streamingRunner(directory) : [processChild, 'runner', directory], { stdio: 'ignore' });
     const completed = new Promise<void>((resolve, reject) => {
       runner.once('error', reject);
       runner.once('exit', () => resolve());
@@ -360,9 +406,9 @@ describe.skipIf(process.platform !== 'win32')('Windows 批处理入口', () => {
       .rejects.toMatchObject({ name: 'CommandError', exitCode: 1 });
   });
 
-  test('转发入口清理批处理及全部后代，并保留终止状态', async () => {
+  for (const stream of [false, true]) test(`${stream ? '纯流式' : '继承终端'}转发入口清理批处理及全部后代，并保留终止状态`, async () => {
     const directory = temporaryDirectory();
-    const runner = spawn(process.execPath, [processChild, 'windows-runner', directory], { stdio: 'ignore' });
+    const runner = spawn(process.execPath, stream ? streamingRunner(directory) : [processChild, 'windows-runner', directory], { stdio: 'ignore' });
     const completed = new Promise<void>((resolve, reject) => {
       runner.once('error', reject);
       runner.once('exit', () => resolve());

@@ -13,9 +13,9 @@ export interface CommandResult {
   exitCode: number;
   /** 正常退出时为空，Windows 信号终止保留父进程收到的信号 */
   signal: NodeJS.Signals | null;
-  /** inherit 模式下为空字符串 */
+  /** 未启用 capture 时为空字符串 */
   stdout: string;
-  /** inherit 模式下为空字符串 */
+  /** 未启用 capture 时为空字符串 */
   stderr: string;
 }
 
@@ -44,7 +44,7 @@ export class CommandError extends Error {
   }
 }
 
-/** 异步命令的输出捕获和信号转发选项 */
+/** 异步命令的输出交付和信号转发选项 */
 export interface RunCommandOptions {
   /**
    * 本次子进程的环境覆盖，未指定的变量继承父环境
@@ -52,12 +52,14 @@ export interface RunCommandOptions {
    * @description undefined 删除变量；Windows 运行时可补回 PATH 等必需系统变量
    */
   env?: NodeJS.ProcessEnv;
-  /** 捕获 stdout 和 stderr；默认直接继承当前终端 */
+  /** 累计 stdout 和 stderr 作为命令结果；默认不累计 */
   capture?: boolean;
   /**
-   * 接收捕获范围内的原始输出块，仅可与 capture 一同使用
+   * 接收 stdout 和 stderr 的原始输出块，stdin 仍继承当前终端
    *
    * @description
+   * - 未启用 capture 时只转交输出，不累计诊断或应用 maxBuffer 上限
+   * - 启用 capture 时只转交捕获上限内保留的字节
    * - 按两个管道被读取的顺序串行调用，不保证还原子进程跨流写入的先后
    * - 等待回调期间暂停管道读取，命令结果等待所有回调完成
    * - 回调抛错或拒绝时终止进程树，以 CommandError 保留原因和已捕获输出
@@ -66,11 +68,11 @@ export interface RunCommandOptions {
   onOutput?: (output: CommandOutput) => void | Promise<void>;
   /** 转发 SIGINT、SIGTERM 并在父进程退出时清理子进程；默认启用 */
   forwardSignals?: boolean;
-  /** 捕获输出的总字节上限，默认 16 MiB */
+  /** 捕获输出的总字节上限，仅对 capture 生效，默认 16 MiB */
   maxBuffer?: number;
 }
 
-/** 捕获范围内的一个原始输出块，不包含字符编码假设 */
+/** 从子进程管道读取的原始输出块，不包含字符编码假设 */
 export interface CommandOutput {
   stream: 'stdout' | 'stderr';
   data: Buffer;
@@ -173,16 +175,14 @@ function prepareCommand(command: string, args: string[], cwd: string, env = proc
  *
  * @description
  * - 正常退出及非零退出均返回结果，启动失败、输出超限或回调失败抛出 CommandError
- * - 默认继承终端，capture 模式保留输出中的换行和首尾空白
+ * - 未指定 capture 和 onOutput 时继承终端；所有模式都继承 stdin
+ * - capture 保留输出中的换行和首尾空白，仅使用 onOutput 时不累计输出
  * - Unix 子进程使用独立进程组，转发信号及退出清理只作用于该命令的进程树
  */
 export function runCommand(spec: CommandSpec, options: RunCommandOptions = {}): Promise<CommandResult> {
   const maxBuffer = options.maxBuffer ?? 16 * 1024 * 1024;
   if (!Number.isSafeInteger(maxBuffer) || maxBuffer < 0) {
     return Promise.reject(new RangeError('maxBuffer 必须是非负安全整数'));
-  }
-  if (options.onOutput && !options.capture) {
-    return Promise.reject(new TypeError('onOutput 仅可与 capture 一同使用'));
   }
   return new Promise((resolve, reject) => {
     const detached = process.platform !== 'win32';
@@ -192,7 +192,7 @@ export function runCommand(spec: CommandSpec, options: RunCommandOptions = {}): 
       child = spawn(prepared.command, prepared.args, {
         cwd: spec.cwd,
         env: prepared.env,
-        stdio: options.capture ? ['inherit', 'pipe', 'pipe'] : 'inherit',
+        stdio: options.capture || options.onOutput ? ['inherit', 'pipe', 'pipe'] : 'inherit',
         detached,
         shell: false,
         windowsVerbatimArguments: prepared.windowsVerbatimArguments,
@@ -263,14 +263,17 @@ export function runCommand(spec: CommandSpec, options: RunCommandOptions = {}): 
       child.stderr?.resume();
     }
 
-    function capture(stream: CommandOutput['stream'], chunks: Buffer[], data: Buffer): void {
-      const remaining = Math.max(0, maxBuffer - capturedBytes);
-      const retained = remaining > 0 ? Buffer.from(data.subarray(0, remaining)) : undefined;
-      if (retained) chunks.push(retained);
-      capturedBytes += data.length;
-      if (capturedBytes > maxBuffer && !outputExceeded) {
-        outputExceeded = true;
-        killTree('SIGKILL');
+    function receiveOutput(stream: CommandOutput['stream'], chunks: Buffer[], data: Buffer): void {
+      let retained: Buffer | undefined = data;
+      if (options.capture) {
+        const remaining = Math.max(0, maxBuffer - capturedBytes);
+        retained = remaining > 0 ? Buffer.from(data.subarray(0, remaining)) : undefined;
+        if (retained) chunks.push(retained);
+        capturedBytes += data.length;
+        if (capturedBytes > maxBuffer && !outputExceeded) {
+          outputExceeded = true;
+          killTree('SIGKILL');
+        }
       }
       if (retained && options.onOutput && !outputFailed) {
         // 两个管道共用一个有界队列，异步回调不能让另一个流继续积压
@@ -284,8 +287,8 @@ export function runCommand(spec: CommandSpec, options: RunCommandOptions = {}): 
       }
     }
 
-    child.stdout?.on('data', (data: Buffer) => capture('stdout', stdout, data));
-    child.stderr?.on('data', (data: Buffer) => capture('stderr', stderr, data));
+    child.stdout?.on('data', (data: Buffer) => receiveOutput('stdout', stdout, data));
+    child.stderr?.on('data', (data: Buffer) => receiveOutput('stderr', stderr, data));
     child.once('error', error => { spawnError = error; });
     child.once('exit', () => {
       // 组长退出后清理仍持有终端或输出管道的后代进程
