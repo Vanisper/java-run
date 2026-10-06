@@ -3,6 +3,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { assertReleaseAssets, assertReleaseLicense, releaseMetadata, releaseNotes } from './release';
+import { createLogger } from '../src/logging/logger';
+import { createTerminalReporter } from '../src/terminal/log-reporter';
+import { resolveTerminalPolicy } from '../src/terminal/policy';
 
 const projectRoot = resolve(import.meta.dir, '..');
 
@@ -138,8 +141,14 @@ async function main(action: string | undefined): Promise<void> {
 }
 
 if (import.meta.main) {
-  main(Bun.argv.length === 3 ? Bun.argv[2] : undefined).catch(error => {
-    console.error(`java-run：${error instanceof Error ? error.message : String(error)}`);
+  const logger = createLogger({ context: 'java-run', reporter: createTerminalReporter(resolveTerminalPolicy({})) }).withContext('publish-release');
+  try {
+    await main(Bun.argv.length === 3 ? Bun.argv[2] : undefined);
+  } catch (error) {
+    logger.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
-  });
+  } finally {
+    try { await logger.flush(); }
+    catch { process.exitCode ||= 1; }
+  }
 }

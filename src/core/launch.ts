@@ -34,9 +34,11 @@ export async function resolveMainClass(config: RunConfig, project: PreparedProje
 /**
  * 生成独立 Java 进程的启动命令并返回实际主类
  *
- * @description 缺少产物、无法确定主类或生成类路径失败时抛出错误
+ * @description
+ * - 缺少产物、无法确定主类或生成类路径失败时抛出错误
+ * - execute 只执行生成类路径的捕获命令；返回的 Java 启动命令由调用方执行
  */
-export async function createLaunchCommand(config: RunConfig, project: PreparedProject, workspace: string, selectMainClass?: MainClassSelector): Promise<CommandSpec & { mainClass: string }> {
+export async function createLaunchCommand(config: RunConfig, project: PreparedProject, workspace: string, selectMainClass?: MainClassSelector, execute: typeof runCommand = runCommand): Promise<CommandSpec & { mainClass: string }> {
   const main = await resolveMainClass(config, project, selectMainClass);
   const java = config.javaCommand || project.javaCommand || (process.env.JAVA_HOME ? join(process.env.JAVA_HOME, 'bin', process.platform === 'win32' ? 'java.exe' : 'java') : 'java');
   const manifest = join(workspace, 'MANIFEST.MF');
@@ -45,7 +47,7 @@ export async function createLaunchCommand(config: RunConfig, project: PreparedPr
   await assertJavaArguments(java, args, project.directory);
   writeFileSync(manifest, createManifest(project.classpath));
   const spec = { command: resolveJar(java), args: ['cfm', 'classpath.jar', 'MANIFEST.MF'], cwd: workspace, stage: '生成运行类路径' };
-  const result = await runCommand(spec, { capture: true });
+  const result = await execute(spec, { capture: true });
   if (result.exitCode !== 0) throw new CommandError(spec, result);
   return { command: java, args, cwd: project.directory, stage: '运行 Java 应用', mainClass: main };
 }

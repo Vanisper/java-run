@@ -142,7 +142,7 @@ describe('生成项目启动配置', () => {
     expect(next.javaCommand).toBeUndefined();
     expect(next.buildCommand).toBeUndefined();
     expect(existsSync(join(fixture.root, 'application-started'))).toBe(false);
-    expect(result.stderr).not.toContain('java-run：运行');
+    expect(result.stderr).not.toMatch(/\[java-run[^\]]*\] ℹ 运行 /);
   }, 30000);
 
   test('Maven 单项目保存自动发现的主类，默认配置保持简洁', () => {
@@ -250,7 +250,7 @@ describe('CLI 启动入口', () => {
     ], { encoding: 'utf8', timeout: 20000, stdio: ['pipe', 'pipe', 'pipe'] });
     if (result.error) throw result.error;
     expect(result.status).toBe(0);
-    expect(result.stderr).toContain('java-run：运行 MavenEntry（maven）');
+    expect(result.stderr).toContain('[java-run:run:maven] ℹ 运行 MavenEntry');
     expect(existsSync(join(fixture.root, 'application-started'))).toBe(true);
   }, 30000);
 });

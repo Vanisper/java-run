@@ -5,6 +5,9 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { platforms, platformFor } from './platforms';
 import { sha256, verifyBinaryChecksum } from './checksum';
+import { createLogger, type Logger } from '../src/logging/logger';
+import { createTerminalReporter } from '../src/terminal/log-reporter';
+import { resolveTerminalPolicy } from '../src/terminal/policy';
 
 const projectRoot = resolve(import.meta.dir, '..');
 const licenseNames = ['LICENSE', 'LICENSE.md', 'LICENSE.txt'];
@@ -220,7 +223,7 @@ export async function writeReleaseChecksums(directory: string, version: string):
   return manifest;
 }
 
-async function main(argv: string[]): Promise<void> {
+async function main(argv: string[], logger: Logger): Promise<void> {
   const version: unknown = JSON.parse(readFileSync(resolve(projectRoot, 'package.json'), 'utf8')).version;
   if (typeof version !== 'string') throw new Error('package.json 必须包含版本字符串');
   const publishing = argv[0] === 'metadata' && argv[1] === '--publish';
@@ -230,33 +233,38 @@ async function main(argv: string[]): Promise<void> {
   if (argv[0] === 'metadata') {
     const metadata = releaseMetadata(version);
     if (publishing) assertReleaseLicense(projectRoot);
-    console.log(JSON.stringify(metadata, null, 2));
+    process.stdout.write(`${JSON.stringify(metadata, null, 2)}\n`);
     if (process.env.GITHUB_OUTPUT) {
       const outputs = Object.entries(metadata).map(([key, value]) => `${key}=${typeof value === 'object' ? JSON.stringify(value) : value}`);
       appendFileSync(process.env.GITHUB_OUTPUT, `${outputs.join('\n')}\n`);
     }
   } else if (argv[0] === 'notes') {
-    console.log(releaseNotes(version));
+    process.stdout.write(`${releaseNotes(version)}\n`);
   } else if (argv[0] === 'package') {
     const directory = resolve(projectRoot, 'dist');
     await packageRelease(directory, argv[1]!);
     const unpacked = await verifyReleasePackage(directory, argv[1]!);
     try {
+      await logger.flush();
       const result = spawnSync(process.execPath, [resolve(projectRoot, 'scripts/smoke.ts'), `--cli=${unpacked.binary}`, '--suite=quick'], { stdio: 'inherit' });
       if (result.error || result.status !== 0) throw new Error(`解包后的启动验收失败：${result.error?.message ?? result.status}`);
     } finally { await unpacked.cleanup(); }
   } else if (argv[0] === 'checksums') {
-    console.log(await writeReleaseChecksums(resolve(projectRoot, 'dist'), version));
+    process.stdout.write(`${await writeReleaseChecksums(resolve(projectRoot, 'dist'), version)}\n`);
   } else if (argv[0] === 'verify-assets') {
     assertReleaseAssets(await Bun.stdin.json(), version);
-    console.log('Release 资产集合已核对');
+    logger.withContext('verify-assets', { version }).success('资产集合已核对');
   } else throw new Error(`未知发布步骤：${argv[0]}`);
 }
 
 if (import.meta.main) {
-  try { await main(Bun.argv.slice(2)); }
+  const logger = createLogger({ context: 'java-run', reporter: createTerminalReporter(resolveTerminalPolicy({})) }).withContext('release');
+  try { await main(Bun.argv.slice(2), logger); }
   catch (error) {
-    console.error(`java-run：${error instanceof Error ? error.message : String(error)}`);
+    logger.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
+  } finally {
+    try { await logger.flush(); }
+    catch { process.exitCode ||= 1; }
   }
 }

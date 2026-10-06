@@ -4,7 +4,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runCommand } from '../src/process/exec';
+import iconv from 'iconv-lite';
+import { CommandError, decodeOutput, runCommand, type CommandOutput } from '../src/process/exec';
 import type { CommandSpec } from '../src/core/types';
 
 const temporaryDirectories: string[] = [];
@@ -54,6 +55,164 @@ describe('异步执行', () => {
   test('非零退出的 stderr 可用于 Maven 或 Java 诊断', async () => {
     const result = await runCommand(command('process.stdout.write("前置输出\\n"); process.stderr.write("编译失败\\n"); process.exit(7)'), { capture: true });
     expect(result).toEqual({ exitCode: 7, signal: null, stdout: '前置输出\n', stderr: '编译失败\n' });
+  });
+
+  test('输出回调在子进程结束前收到原始字节，跨块字符及旧编码保留完整诊断', async () => {
+    const directory = temporaryDirectory();
+    const acknowledgment = path.join(directory, 'observed');
+    const stdout = Buffer.from('中文启动日志\n');
+    const stderrText = '正在编译目标项目，解析运行依赖，准备完成。\n'.repeat(8);
+    const stderr = Buffer.from(iconv.encode(stderrText, 'gb18030'));
+    const parts: { stream: CommandOutput['stream']; data: number[] }[] = [
+      { stream: 'stdout', data: [...stdout.subarray(0, 2)] },
+      { stream: 'stdout', data: [...stdout.subarray(2)] },
+      { stream: 'stderr', data: [...stderr.subarray(0, 1)] },
+      { stream: 'stderr', data: [...stderr.subarray(1)] },
+    ];
+    const observed: CommandOutput[] = [];
+    let observedBytes = 0;
+    const source = `
+      import { existsSync, readFileSync } from 'node:fs';
+      const acknowledgment = ${JSON.stringify(acknowledgment)};
+      setTimeout(() => process.exit(90), 3000).unref();
+      let sentBytes = 0;
+      for (const part of ${JSON.stringify(parts)}) {
+        const data = Buffer.from(part.data);
+        process[part.stream].write(data);
+        sentBytes += data.length;
+        while (!existsSync(acknowledgment) || Number(readFileSync(acknowledgment, 'utf8')) < sentBytes) {
+          await Bun.sleep(5);
+        }
+      }
+    `;
+    const result = await runCommand(command(source), {
+      capture: true,
+      onOutput(output) {
+        observed.push(output);
+        observedBytes += output.data.length;
+        writeFileSync(acknowledgment, String(observedBytes));
+      },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(observed.map(output => output.stream)).toEqual(parts.map(part => part.stream));
+    expect(Buffer.concat(observed.filter(output => output.stream === 'stdout').map(output => output.data))).toEqual(stdout);
+    expect(Buffer.concat(observed.filter(output => output.stream === 'stderr').map(output => output.data))).toEqual(stderr);
+    expect(result.stdout).toBe('中文启动日志\n');
+    expect(result.stderr).toBe(stderrText);
+    expect(decodeOutput(stderr)).toBe(result.stderr);
+  });
+
+  test('缓慢输出回调暂停管道并串行交付，子进程无法提前排空大输出', async () => {
+    const directory = temporaryDirectory();
+    const written = path.join(directory, 'written');
+    const byteLength = 4 * 1024 * 1024;
+    const observed: Buffer[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let active = 0;
+    let maximumActive = 0;
+    let firstObserved = false;
+    const source = `
+      import { writeFileSync } from 'node:fs';
+      writeFileSync(1, Buffer.alloc(${byteLength}, 120));
+      writeFileSync(${JSON.stringify(written)}, 'done');
+    `;
+    const running = runCommand(command(source), {
+      capture: true,
+      async onOutput(output) {
+        active++;
+        maximumActive = Math.max(maximumActive, active);
+        if (!firstObserved) {
+          firstObserved = true;
+          await gate;
+        }
+        observed.push(output.data);
+        active--;
+      },
+    });
+    try {
+      await waitUntil(() => firstObserved);
+      await Bun.sleep(100);
+      expect(existsSync(written)).toBe(false);
+    } finally {
+      release();
+      await running;
+    }
+    const result = await running;
+    expect(result.exitCode).toBe(0);
+    expect(maximumActive).toBe(1);
+    expect(Buffer.concat(observed)).toEqual(Buffer.alloc(byteLength, 120));
+    expect(result.stdout.length).toBe(byteLength);
+    expect(existsSync(written)).toBe(true);
+  });
+
+  test('子进程退出后仍等待输出回调，回调修改副本不影响捕获诊断', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let observed = false;
+    let completed = false;
+    const running = runCommand(command('process.stdout.write("original")'), {
+      capture: true,
+      async onOutput(output) {
+        output.data.fill(120);
+        observed = true;
+        await gate;
+      },
+    }).then(result => { completed = true; return result; });
+    try {
+      await waitUntil(() => observed);
+      await Bun.sleep(30);
+      expect(completed).toBe(false);
+    } finally {
+      release();
+      await running;
+    }
+    expect((await running).stdout).toBe('original');
+  });
+
+  test.each(['throw', 'reject'] as const)('输出回调 %s 时清理进程并保留原始原因和诊断', async mode => {
+    const directory = temporaryDirectory();
+    const pidFile = path.join(directory, 'child.pid');
+    const leafPidFile = path.join(directory, 'leaf.pid');
+    const failure = new Error('呈现输出失败');
+    const signals = ['SIGINT', 'SIGTERM', 'exit'] as const;
+    const original = signals.map(signal => process.listenerCount(signal));
+    const source = `
+      import { spawn } from 'node:child_process';
+      import { existsSync, writeFileSync } from 'node:fs';
+      writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+      const leaf = spawn(process.execPath, [${JSON.stringify(processChild)}, 'leaf', ${JSON.stringify(directory)}], { stdio: 'inherit' });
+      const ready = setInterval(() => {
+        if (existsSync(${JSON.stringify(leafPidFile)})) {
+          clearInterval(ready);
+          process.stderr.write('original diagnostic\\n');
+        }
+      }, 5);
+      setTimeout(() => { leaf.kill('SIGKILL'); process.exit(90); }, 3000).unref();
+    `;
+    let observed = 0;
+    const result = await runCommand(command(source), {
+      capture: true,
+      onOutput() {
+        observed++;
+        if (mode === 'throw') throw failure;
+        return Promise.reject(failure);
+      },
+    }).catch(error => error);
+    expect(result).toBeInstanceOf(CommandError);
+    expect(result.cause).toBe(failure);
+    expect(result.stderr).toBe('original diagnostic\n');
+    expect(observed).toBe(1);
+    expect(signals.map(signal => process.listenerCount(signal))).toEqual(original);
+    await waitUntil(() => !isAlive(Number(readFileSync(pidFile, 'utf8'))));
+    await waitUntil(() => !isAlive(Number(readFileSync(leafPidFile, 'utf8'))));
+  });
+
+  test('没有捕获输出时拒绝注册输出回调且不启动命令', async () => {
+    const marker = path.join(temporaryDirectory(), 'started');
+    const source = `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'started');`;
+    await expect(runCommand(command(source), { onOutput() {} })).rejects.toThrow('onOutput 仅可与 capture');
+    expect(existsSync(marker)).toBe(false);
   });
 
   test('参数中的空格、中文和 shell 字符保持原边界', async () => {
@@ -113,10 +272,23 @@ describe('异步执行', () => {
   });
 
   test('捕获输出超限时终止命令，保留有界诊断输出', async () => {
+    const observed: Buffer[] = [];
     await expect(runCommand(command('process.stdout.write("x".repeat(10000)); setInterval(() => {}, 1000)'), {
       capture: true,
       maxBuffer: 128,
+      onOutput(output) { observed.push(output.data); },
     })).rejects.toMatchObject({ name: 'CommandError', stdout: 'x'.repeat(128) });
+    expect(Buffer.concat(observed)).toEqual(Buffer.alloc(128, 120));
+  });
+
+  test('捕获上限为零时不向回调泄露输出', async () => {
+    let called = false;
+    await expect(runCommand(command('process.stdout.write("private")'), {
+      capture: true,
+      maxBuffer: 0,
+      onOutput() { called = true; },
+    })).rejects.toMatchObject({ name: 'CommandError', stdout: '', stderr: '' });
+    expect(called).toBe(false);
   });
 });
 

@@ -3,6 +3,9 @@ import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { releaseMetadata } from './release';
+import { createLogger } from '../src/logging/logger';
+import { createTerminalReporter } from '../src/terminal/log-reporter';
+import { resolveTerminalPolicy } from '../src/terminal/policy';
 
 interface PullRequest {
   url: string;
@@ -153,6 +156,7 @@ export function prepareRelease(options: {
 }
 
 if (import.meta.main) {
+  const logger = createLogger({ context: 'java-run', reporter: createTerminalReporter(resolveTerminalPolicy({})) }).withContext('prepare-release');
   try {
     if (process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || process.env.GITHUB_REF !== 'refs/heads/master') {
       throw new Error('发布准备只能从 master 手动运行 Prepare Release 工作流');
@@ -163,7 +167,7 @@ if (import.meta.main) {
       baseSha: process.env.GITHUB_SHA ?? '',
       repository: process.env.GITHUB_REPOSITORY ?? '',
     });
-    console.log(JSON.stringify(result, null, 2));
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     if (process.env.GITHUB_OUTPUT) {
       appendFileSync(process.env.GITHUB_OUTPUT, `${Object.entries(result).map(([key, value]) => `${key}=${value}`).join('\n')}\n`);
     }
@@ -171,7 +175,10 @@ if (import.meta.main) {
       appendFileSync(process.env.GITHUB_STEP_SUMMARY, `发布准备 PR：${result.pr_url}\n\n分支：\`${result.branch}\`\n\n提交：\`${result.sha}\`\n\n合并后，从 master 手动运行 Publish 发布。\n`);
     }
   } catch (error) {
-    console.error((error as Error).message);
+    logger.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
+  } finally {
+    try { await logger.flush(); }
+    catch { process.exitCode ||= 1; }
   }
 }

@@ -33,6 +33,13 @@ export function getHelpText(): string {
   --build-command <cmd>   构建工具可执行文件，默认优先使用项目 Wrapper
   --force                 仅用于 init，忽略已有配置并重新生成
 
+终端选项：
+  --log <summary|full>    默认 summary 展示阶段、耗时和最近输出；full 实时保留构建日志
+  --plain                 使用纯文本序号选择与追加输出，关闭颜色和重绘
+  --no-animation          关闭动态进度，保留方向键选择和输入筛选
+  --no-interactive        禁止询问，有歧义时要求显式参数或项目配置
+                         NO_COLOR 非空或 FORCE_COLOR=0 时关闭颜色，不影响选择和进度反馈
+
 项目配置：
   run / plan 从 --cwd 指定的根目录读取 .java-run.json，不向父目录查找。
   可用字段：buildTool、module、mainClass、jvmArgs、applicationArgs、
@@ -41,11 +48,12 @@ export function getHelpText(): string {
   配置使用严格 JSON，不展开环境变量；未知字段和无效类型均报错。
   init 保存实际构建工具、模块、主类及本次显式参数，准备时可能编译或下载依赖。
   init 遇到已有配置时拒绝；--force 从本次选项重新生成，不合并旧配置。
-  --cwd、--java、--build-command 不写入配置；取消或准备失败不写配置。
+  --cwd、--java、--build-command 和终端选项不写入配置；取消或准备失败不写配置。
   plan 只预览步骤，主类和运行类路径仍待构建工具解析。
 
 交互选择：
   终端中缺少目标或存在多个主类时补充选择，库模块不一定可运行。
+  支持方向键和输入筛选；受限终端使用序号选择，CI 不等待输入。
   仅选择目标和入口，参数通过选项提供；run 本次使用，init 保存到配置。
   非交互环境请用 --module / --main 明确指定，run 也可读取配置；取消返回 130。
 
@@ -62,7 +70,7 @@ export function getHelpText(): string {
 
 /** 输出帮助，进程退出由调用方决定 */
 export function helpLog(): void {
-  console.log(getHelpText());
+  process.stdout.write(getHelpText() + '\n');
 }
 
 export default helpLog;

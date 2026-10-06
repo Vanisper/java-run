@@ -17,17 +17,19 @@
 java-run --cwd examples/multiple-main -- --format=table "hello world"
 ```
 
-java-run 自动编译项目。
-在标准输入与标准错误均连接终端时，两个入口会按类名排列为候选：
+java-run 自动编译项目，并展示准备阶段和耗时。
+在标准输入与标准错误均连接终端且允许交互时，两个入口会按类名排列为候选：
 
 ```text
-选择启动主类
-  1. com.example.HelloApplication
-  2. com.example.ReportApplication
-选择 [1-2]：
+? 选择启动主类
+> HelloApplication
+  ReportApplication
+
+com.example.HelloApplication
+↑↓ 移动 · 输入筛选 · 回车确认 · Ctrl+C 取消
 ```
 
-输入 `2` 并回车，`ReportApplication` 会运行并输出：
+按向下键并回车，或输入 `Report` 筛选后回车，`ReportApplication` 会运行并输出：
 
 ```text
 entry=com.example.ReportApplication
@@ -36,6 +38,9 @@ args=[--format=table, hello world]
 
 `--` 后的参数传给所选入口。
 `hello world` 是一个参数，终端选择不会改变参数边界。
+
+需要完整构建日志时，在命令中加入 `--log=full`。
+使用 `--plain` 时改为序号菜单，输入 `2` 并回车即可选择 `ReportApplication`；`--no-animation` 只关闭动态进度，仍可用方向键和筛选选择入口。
 
 ## 明确指定入口
 
@@ -64,7 +69,7 @@ java-run init --cwd examples/multiple-main -- --format=table "hello world"
 ```
 
 此命令同样编译项目并显示两个主类。
-输入 `2` 后保存 `ReportApplication` 和应用参数，此时不运行应用。
+选择 `ReportApplication` 并回车后保存入口和应用参数，此时不运行应用。
 随后执行：
 
 ```sh

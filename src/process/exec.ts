@@ -54,13 +54,30 @@ export interface RunCommandOptions {
   env?: NodeJS.ProcessEnv;
   /** 捕获 stdout 和 stderr；默认直接继承当前终端 */
   capture?: boolean;
+  /**
+   * 接收捕获范围内的原始输出块，仅可与 capture 一同使用
+   *
+   * @description
+   * - 按两个管道被读取的顺序串行调用，不保证还原子进程跨流写入的先后
+   * - 等待回调期间暂停管道读取，命令结果等待所有回调完成
+   * - 回调抛错或拒绝时终止进程树，以 CommandError 保留原因和已捕获输出
+   * - 输出块是独立副本，字符可能跨块，调用方应按流保留解码状态
+   */
+  onOutput?: (output: CommandOutput) => void | Promise<void>;
   /** 转发 SIGINT、SIGTERM 并在父进程退出时清理子进程；默认启用 */
   forwardSignals?: boolean;
   /** 捕获输出的总字节上限，默认 16 MiB */
   maxBuffer?: number;
 }
 
-function decodeOutput(output: Buffer): string {
+/** 捕获范围内的一个原始输出块，不包含字符编码假设 */
+export interface CommandOutput {
+  stream: 'stdout' | 'stderr';
+  data: Buffer;
+}
+
+/** 检测完整输出的编码并解码，无法识别时按 UTF-8 读取 */
+export function decodeOutput(output: Buffer): string {
   if (output.length === 0) return '';
   const detected = jschardet.detect(output);
   return detected.encoding && iconv.encodingExists(detected.encoding)
@@ -155,7 +172,7 @@ function prepareCommand(command: string, args: string[], cwd: string, env = proc
  * 执行外部命令并等待完整退出
  *
  * @description
- * - 正常退出及非零退出均返回结果，启动失败或输出超限抛出 CommandError
+ * - 正常退出及非零退出均返回结果，启动失败、输出超限或回调失败抛出 CommandError
  * - 默认继承终端，capture 模式保留输出中的换行和首尾空白
  * - Unix 子进程使用独立进程组，转发信号及退出清理只作用于该命令的进程树
  */
@@ -163,6 +180,9 @@ export function runCommand(spec: CommandSpec, options: RunCommandOptions = {}): 
   const maxBuffer = options.maxBuffer ?? 16 * 1024 * 1024;
   if (!Number.isSafeInteger(maxBuffer) || maxBuffer < 0) {
     return Promise.reject(new RangeError('maxBuffer 必须是非负安全整数'));
+  }
+  if (options.onOutput && !options.capture) {
+    return Promise.reject(new TypeError('onOutput 仅可与 capture 一同使用'));
   }
   return new Promise((resolve, reject) => {
     const detached = process.platform !== 'win32';
@@ -189,6 +209,11 @@ export function runCommand(spec: CommandSpec, options: RunCommandOptions = {}): 
     let spawnError: Error | undefined;
     let escalation: ReturnType<typeof setTimeout> | undefined;
     let receivedSignal: NodeJS.Signals | null = null;
+    const pendingOutput: CommandOutput[] = [];
+    let outputWork = Promise.resolve();
+    let deliveringOutput = false;
+    let outputFailed = false;
+    let outputError: unknown;
 
     function killTree(signal: NodeJS.Signals): void {
       if (!child.pid) return;
@@ -221,28 +246,57 @@ export function runCommand(spec: CommandSpec, options: RunCommandOptions = {}): 
       process.on('exit', onParentExit);
     }
 
-    function capture(chunks: Buffer[], data: Buffer): void {
+    async function deliverOutput(): Promise<void> {
+      while (pendingOutput.length && !outputFailed) {
+        const output = pendingOutput.shift()!;
+        try {
+          await options.onOutput!(output);
+        } catch (error) {
+          outputFailed = true;
+          outputError = error;
+          killTree('SIGKILL');
+        }
+      }
+      pendingOutput.length = 0;
+      deliveringOutput = false;
+      child.stdout?.resume();
+      child.stderr?.resume();
+    }
+
+    function capture(stream: CommandOutput['stream'], chunks: Buffer[], data: Buffer): void {
       const remaining = Math.max(0, maxBuffer - capturedBytes);
-      if (remaining > 0) chunks.push(Buffer.from(data.subarray(0, remaining)));
+      const retained = remaining > 0 ? Buffer.from(data.subarray(0, remaining)) : undefined;
+      if (retained) chunks.push(retained);
       capturedBytes += data.length;
       if (capturedBytes > maxBuffer && !outputExceeded) {
         outputExceeded = true;
         killTree('SIGKILL');
       }
+      if (retained && options.onOutput && !outputFailed) {
+        // 两个管道共用一个有界队列，异步回调不能让另一个流继续积压
+        child.stdout?.pause();
+        child.stderr?.pause();
+        pendingOutput.push({ stream, data: Buffer.from(retained) });
+        if (!deliveringOutput) {
+          deliveringOutput = true;
+          outputWork = deliverOutput();
+        }
+      }
     }
 
-    child.stdout?.on('data', (data: Buffer) => capture(stdout, data));
-    child.stderr?.on('data', (data: Buffer) => capture(stderr, data));
+    child.stdout?.on('data', (data: Buffer) => capture('stdout', stdout, data));
+    child.stderr?.on('data', (data: Buffer) => capture('stderr', stderr, data));
     child.once('error', error => { spawnError = error; });
     child.once('exit', () => {
       // 组长退出后清理仍持有终端或输出管道的后代进程
       killTree('SIGKILL');
     });
-    child.once('close', (exitCode, signal) => {
+    async function finish(exitCode: number | null, signal: NodeJS.Signals | null): Promise<void> {
       if (escalation) clearTimeout(escalation);
       process.removeListener('SIGINT', onSigint);
       process.removeListener('SIGTERM', onSigterm);
       process.removeListener('exit', onParentExit);
+      await outputWork;
       const effectiveSignal = signal ?? (process.platform === 'win32' ? receivedSignal : null);
       const result: CommandResult = {
         exitCode: spawnError ? spawnExitCode(spawnError)
@@ -252,12 +306,16 @@ export function runCommand(spec: CommandSpec, options: RunCommandOptions = {}): 
         stdout: decodeOutput(Buffer.concat(stdout)),
         stderr: decodeOutput(Buffer.concat(stderr)),
       };
-      if (spawnError || outputExceeded) {
+      if (spawnError || outputExceeded || outputFailed) {
         reject(new CommandError(spec, result,
-          spawnError ?? new Error(`命令输出超过 ${maxBuffer} 字节`)));
+          spawnError ?? (outputFailed ? outputError : new Error(`命令输出超过 ${maxBuffer} 字节`))));
       } else {
         resolve(result);
       }
+    }
+
+    child.once('close', (exitCode, signal) => {
+      void finish(exitCode, signal).catch(reject);
     });
   });
 }

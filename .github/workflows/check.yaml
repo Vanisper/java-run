@@ -47,6 +47,11 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version
+      - name: 安装真实 PTY 验收使用的 Python
+        if: runner.os != 'Windows'
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
       - name: 安装固定版本 Gradle
         uses: gradle/actions/setup-gradle@v5
         with:
@@ -66,6 +71,11 @@ jobs:
         run: bun test
       - name: 编译本机二进制
         run: bun run compile
+      - name: 原生二进制真实 PTY 验收
+        if: runner.os != 'Windows'
+        env:
+          JAVA_RUN_PTY_CLI: ${{ github.workspace }}/dist/java-run
+        run: bun test tests/terminal-pty.test.ts --test-name-pattern '编译二进制'
       - name: 原生二进制 Maven / Gradle smoke
         env:
           JAVA_RUN_MAVEN_REPOSITORY: ${{ runner.temp }}/java-run-maven-repository

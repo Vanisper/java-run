@@ -11,62 +11,99 @@ import { toProjectConfig } from './cli/config';
 import { createProjectConfigWriter } from './cli/init';
 import { createLaunchCommand, resolveMainClass } from './core/launch';
 import { CommandError, runCommand } from './process/exec';
+import { resolveTerminalPolicy } from './terminal/policy';
+import { createLogger } from './logging/logger';
+import { createTerminalReporter, writeDiagnostic } from './terminal/log-reporter';
+import { createPreparationPresentation } from './cli/preparation';
 import { version } from '../package.json';
 
 /** 执行一个 CLI 请求，保留 Java 或构建工具的失败退出码 */
 export async function main(argv: string[]): Promise<number> {
   let workspace: string | undefined;
+  let presentation: ReturnType<typeof createPreparationPresentation> | undefined;
+  let logger = createLogger({ context: 'java-run', reporter: createTerminalReporter({ color: false }) });
+  let exitCode = 0;
   try {
     const config = parseArgs(argv);
+    const policy = resolveTerminalPolicy(config.terminal);
+    logger = createLogger({ context: 'java-run', reporter: createTerminalReporter(policy) })
+      .withContext(config.action, { cwd: config.cwd });
     if (config.action === 'help') { helpLog(); return 0; }
-    if (config.action === 'version') { console.log(`java-run ${version}`); return 0; }
+    if (config.action === 'version') { process.stdout.write(`java-run ${version}\n`); return 0; }
     const configWriter = config.action === 'init' ? createProjectConfigWriter(config.cwd, config.force) : undefined;
     const tool = detectBuildTool(config);
+    logger = logger.withContext(tool);
     if (config.action === 'plan') {
       const previewWorkspace = join(tmpdir(), '<java-run-workspace>');
       const plan = tool === 'maven' ? planMaven(config, previewWorkspace) : planGradle(config, previewWorkspace);
-      console.log(JSON.stringify({ ...plan, launch: { java: config.javaCommand || '由工具链解析', main: config.mainClass || '由项目声明或唯一 main 方法确定',
+      process.stdout.write(JSON.stringify({ ...plan, launch: { java: config.javaCommand || '由工具链解析', main: config.mainClass || '由项目声明或唯一 main 方法确定',
         jvmArgs: config.jvmArgs, applicationArgs: config.applicationArgs },
-        notes: [...plan.notes, '这是静态预览，未验证有效项目模型、主类和依赖文件'] }, null, 2));
+        notes: [...plan.notes, '这是静态预览，未验证有效项目模型、主类和依赖文件'] }, null, 2) + '\n');
       return 0;
     }
+    presentation = createPreparationPresentation(policy, logger);
     workspace = mkdtempSync(join(tmpdir(), 'java-run-'));
-    if (!config.module && (config.action === 'init' || process.stdin.isTTY && process.stderr.isTTY)) {
+    const workspacePath = workspace;
+    if (!config.module && (config.action === 'init' || policy.input !== 'none')) {
       const discoverModules = tool === 'gradle' || await needsMavenModule(config);
       if (discoverModules) {
-        const candidates = tool === 'gradle' ? await discoverGradleProjects(config, workspace)
-          : await discoverMavenProjects(config, workspace);
+        const candidates = await presentation.run(`读取 ${tool === 'gradle' ? 'Gradle' : 'Maven'} 模块候选`, execute => tool === 'gradle'
+          ? discoverGradleProjects(config, workspacePath, execute) : discoverMavenProjects(config, workspacePath, execute));
         config.module = candidates.length === 1 ? candidates[0]!.value
-          : await chooseCandidate(candidates, '选择启动项目（库模块可能没有 main）');
-        console.error(`java-run：已选择 --module=${config.module}`);
+          : await chooseCandidate(candidates, '选择启动项目（库模块可能没有 main）', policy);
+        logger.success(`已选择项目 ${config.module}`, { module: config.module });
       }
     }
-    const project = tool === 'maven' ? await prepareMaven(config, workspace) : await prepareGradle(config, workspace);
-    const selectMainClass = process.stdin.isTTY && process.stderr.isTTY
-      ? (candidates: readonly string[]) => chooseCandidate(candidates.map(value => ({ value, label: value })), '选择启动主类')
+    const project = await presentation.run(`${tool === 'maven' ? 'Maven' : 'Gradle'} 项目准备`, execute => tool === 'maven'
+      ? prepareMaven(config, workspacePath, execute) : prepareGradle(config, workspacePath, execute));
+    const selectMainClass = policy.input !== 'none'
+      ? (candidates: readonly string[]) => chooseCandidate(candidates.map(value => ({
+        value, label: value.split('.').at(-1)!, description: value,
+      })), '选择启动主类', policy)
       : undefined;
+    const mainClass = await resolveMainClass(config, project, selectMainClass);
     if (configWriter) {
-      const mainClass = await resolveMainClass(config, project, selectMainClass);
       configWriter.save(toProjectConfig(config, tool, mainClass));
-      console.error(`java-run：已保存 ${configWriter.path}\n在该工作区运行 java-run 即可启动 ${mainClass}（${tool}）`);
+      logger.success(`已保存 ${configWriter.path}\n在该工作区运行 java-run 即可启动 ${mainClass}`, { mainClass, configPath: configWriter.path });
       return 0;
     }
-    const launch = await createLaunchCommand(config, project, workspace, selectMainClass);
-    console.error(`java-run：运行 ${launch.mainClass}（${tool}）`);
-    return (await runCommand(launch)).exitCode;
+    const launch = await presentation.run('生成运行类路径', execute =>
+      createLaunchCommand({ ...config, mainClass }, project, workspacePath, undefined, execute));
+    logger.info(`运行 ${launch.mainClass}`, { mainClass: launch.mainClass });
+    await logger.flush();
+    exitCode = (await runCommand(launch)).exitCode;
+    return exitCode;
   } catch (error) {
-    if (error instanceof SelectionCancelledError) { console.error('java-run：已取消选择'); return error.exitCode; }
-    if (error instanceof CommandError) {
-      console.error(`java-run：${error.message}\n工作目录：${error.cwd}`);
-      if (error.stdout.trim()) console.error(error.stdout.trim());
-      if (error.stderr.trim()) console.error(error.stderr.trim());
-      if (error.cause instanceof Error) console.error(error.cause.message);
-      return error.exitCode || 1;
+    if (error instanceof SelectionCancelledError) {
+      logger.warn('已取消选择');
+      exitCode = error.exitCode;
+      return exitCode;
     }
-    console.error(`java-run：${error instanceof Error ? error.message : String(error)}`);
-    return 1;
+    if (error instanceof CommandError) {
+      const log = error.exitCode === 130 || error.exitCode === 143 ? logger.warn : logger.error;
+      log(`${error.message}\n工作目录：${error.cwd}`, { cwd: error.cwd, command: error.command, exitCode: error.exitCode });
+      exitCode = error.exitCode || 1;
+      if (!presentation?.hasDisplayed(error)) {
+        try {
+          await logger.flush();
+          if (error.stdout.trim()) await writeDiagnostic(error.stdout.trim());
+          if (error.stderr.trim()) await writeDiagnostic(error.stderr.trim());
+        } catch { /* 诊断写入失败不覆盖原始命令结果 */ }
+      }
+      if (error.cause instanceof Error) logger.error(error.cause.message);
+      return exitCode;
+    }
+    logger.error(error instanceof Error ? error.message : String(error));
+    exitCode = 1;
+    return exitCode;
   } finally {
-    if (workspace) rmSync(workspace, { recursive: true, force: true });
+    try {
+      if (workspace) rmSync(workspace, { recursive: true, force: true });
+    } finally {
+      // 诊断输出失败不能覆盖构建、应用或用户取消的退出码
+      try { await logger.flush(); }
+      catch { if (exitCode === 0) return 1; }
+    }
   }
 }
 

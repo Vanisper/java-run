@@ -84,7 +84,7 @@ export function resolveMavenBaseDirectory(cwd: string, configuredBase?: string):
   return relative(directory, base) || '.';
 }
 
-async function executeMaven(spec: CommandSpec): Promise<void> {
+async function executeMaven(spec: CommandSpec, execute: typeof runCommand): Promise<void> {
   let env: NodeJS.ProcessEnv | undefined;
   // Maven 对 Windows 子模块规范化路径，执行根也需展开 8.3 别名才能匹配相对模块选择器
   let execution = process.platform === 'win32' ? { ...spec, cwd: realpathSync.native(spec.cwd) } : spec;
@@ -109,19 +109,18 @@ async function executeMaven(spec: CommandSpec): Promise<void> {
       bridge = true;
     }
   }
-  if (bridge) await validateWindowsMavenVersion(execution, env!);
-  console.error(`java-run：${spec.stage}`);
-  const result = await runCommand(execution, { capture: true, env });
+  if (bridge) await validateWindowsMavenVersion(execution, env!, execute);
+  const result = await execute(execution, { capture: true, env });
   if (result.exitCode !== 0) throw new CommandError(execution, result);
 }
 
-async function validateWindowsMavenVersion(spec: CommandSpec, env: NodeJS.ProcessEnv): Promise<void> {
+async function validateWindowsMavenVersion(spec: CommandSpec, env: NodeJS.ProcessEnv, execute: typeof runCommand): Promise<void> {
   const key = `${spec.command}\0${spec.cwd}`;
   let checked = windowsMavenVersions.get(key);
   if (!checked) {
     checked = (async () => {
       const versionCommand = { ...spec, args: ['-B', '-ntp', '-version'], stage: '检测 Windows Maven 兼容性' };
-      const result = await runCommand(versionCommand, { capture: true, env });
+      const result = await execute(versionCommand, { capture: true, env });
       if (result.exitCode !== 0) throw new CommandError(versionCommand, result);
       const output = `${result.stdout}\n${result.stderr}`.replace(/\x1b\[[0-9;]*m/g, '');
       const version = /Apache Maven\s+(\d+)\.(\d+)\.(\d+)/.exec(output);
@@ -213,12 +212,16 @@ export function buildClasspath(project: MavenProject, dependencyText: string, in
   return Array.from(new Set([...outputs, ...dependencies]));
 }
 
-/** 构建选定项目并获取 Maven 裁决后的运行类路径 */
-export async function prepareMaven(config: RunConfig, workspace: string): Promise<PreparedProject> {
+/**
+ * 构建选定项目并获取 Maven 裁决后的运行类路径
+ *
+ * @description execute 执行捕获命令；全部命令成功且元数据校验通过后返回准备结果
+ */
+export async function prepareMaven(config: RunConfig, workspace: string, execute: typeof runCommand = runCommand): Promise<PreparedProject> {
   await validateRoot(config);
   const plan = planMaven(config, workspace);
   for (const spec of plan.commands) {
-    await executeMaven(spec);
+    await executeMaven(spec, execute);
   }
   const pomFile = readFileSync(join(workspace, 'project-file.txt'), 'utf8').trim();
   if (!isAbsolute(pomFile) || !existsSync(pomFile)) throw new Error('Maven 未返回有效的目标 POM 路径');
@@ -241,18 +244,22 @@ export async function needsMavenModule(config: RunConfig): Promise<boolean> {
   return document.project?.packaging === 'pom' || Boolean(document.project?.modules);
 }
 
-/** 列出有效 reactor 中的 jar 项目，候选不等同于已有可运行主类 */
-export async function discoverMavenProjects(config: RunConfig, workspace: string): Promise<{ value: string; label: string }[]> {
+/**
+ * 列出有效 reactor 中的 jar 项目，候选不等同于已有可运行主类
+ *
+ * @description execute 执行候选发现命令；候选标识保持 Maven reactor 选择器格式
+ */
+export async function discoverMavenProjects(config: RunConfig, workspace: string, execute: typeof runCommand = runCommand): Promise<{ value: string; label: string; description?: string }[]> {
   const output = join(workspace, 'module-list.xml');
   const spec = command({ ...config, module: undefined }, [`${HELP_PLUGIN}:effective-pom`, `-Doutput=${output}`, '-q'], '读取 Maven 模块候选');
-  await executeMaven(spec);
+  await executeMaven(spec, execute);
   const document = await parseStringPromise(readFileSync(output, 'utf8'), { explicitArray: false });
   const value = document.projects?.project ?? document.project;
   const projects = Array.isArray(value) ? value : value ? [value] : [];
   return projects.filter(project => (project.packaging || 'jar') === 'jar').map(project => {
     const selector = `${project.groupId}:${project.artifactId}`;
     const main = project.properties?.['exec.mainClass'];
-    return { value: selector, label: `${selector}（${main || '主类待解析，可能是库模块'}）` };
+    return { value: selector, label: selector, description: main || '主类待解析，可能是库模块' };
   });
 }
 

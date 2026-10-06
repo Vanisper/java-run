@@ -86,21 +86,23 @@ Maven 接受单个 reactor 选择器，如 `app`、`:artifactId` 或 `groupId:ar
 
 ### 交互选择
 
-当 stdin 和 stderr 都连接终端时，缺少目标或入口的信息可以通过交互补齐：
+当 stdin 和 stderr 都连接终端且允许交互时，缺少目标或入口的信息可以通过菜单补齐。
+使用方向键移动，直接输入文字筛选，按回车确认；候选较多时可以滚动，主类菜单会显示当前候选的完整类名。
 
-- Maven 聚合项目列出有效 reactor 中的 `jar` 项目，Gradle 列出启用了 Java 插件的项目。一个候选自动采用，多个候选通过数字选择。
+- Maven 聚合项目列出有效 reactor 中的 `jar` 项目，Gradle 列出启用了 Java 插件的项目。一个候选自动采用，多个候选通过菜单选择。
 - 候选可能是库模块，入口需要在选定目标准备完成后确认。
-- 主类优先采用 `--main` / 配置值，其次采用构建声明。没有声明时查找目标输出中的传统 `public static void main(String[])`；唯一入口直接采用，多个入口通过数字选择。
+- 主类优先采用 `--main` / 配置值，其次采用构建声明。没有声明时查找目标输出中的传统 `public static void main(String[])`；唯一入口直接采用，多个入口通过菜单选择。
 
 支持的主类声明为 Maven 的 `exec.mainClass` 属性或 Exec Maven Plugin 的 `mainClass`，以及 Gradle application 插件的 `mainClass`。
 
 候选发现会执行构建工具配置，可能下载插件、Wrapper 分发包或准备 `buildSrc` 等构建逻辑。
 选定目标后，再按构建策略准备该项目并解析运行依赖。
-非交互环境和 CI 遇到目标或主类歧义时，需要通过 CLI 或 `.java-run.json` 明确指定。
+非交互环境、CI 或使用 `--no-interactive` 时不会等待输入；遇到目标或主类歧义，需要通过 CLI 或 `.java-run.json` 明确指定。
+使用 `--plain`、`TERM=dumb` 或终端不支持按键模式时，菜单退回序号输入。
 
 交互只选择目标和入口，运行参数通过选项或配置传入。
 普通运行中的选择仅用于本次启动；需要保存时使用 `init`。
-Ctrl+C 或 EOF 取消选择返回 130。
+Ctrl+C、EOF 或 SIGINT 取消选择返回 130，SIGTERM 返回 143。
 
 ### 多入口选择示例
 
@@ -114,13 +116,15 @@ java-run --cwd examples/multiple-main -- --name=demo
 准备完成后，终端会显示：
 
 ```text
-选择启动主类
-  1. com.example.HelloApplication
-  2. com.example.ReportApplication
-选择 [1-2]：
+? 选择启动主类
+> HelloApplication
+  ReportApplication
+
+com.example.HelloApplication
+↑↓ 移动 · 输入筛选 · 回车确认 · Ctrl+C 取消
 ```
 
-输入 `2` 并回车，启动 `ReportApplication`，`--name=demo` 传给它的 `main(String[])`。
+按向下键并回车，或输入 `Report` 筛选后回车，即可启动 `ReportApplication`；`--name=demo` 传给它的 `main(String[])`。
 此例只有一个 Maven 项目，菜单选择的是项目中的入口。
 
 脚本和 CI 可以直接指定主类：
@@ -132,6 +136,32 @@ java-run --cwd examples/multiple-main \
 ```
 
 显式主类、配置中的 `mainClass` 或构建声明已经确定入口时，直接启动该入口，不显示主类菜单。
+
+### 准备进度与构建日志
+
+默认 `--log=summary` 展示当前阶段、已用时间和最近三行构建输出。
+支持重绘的终端会持续更新状态，快速完成的步骤直接留下完成记录。
+这些状态表示当前活动，不估算完成百分比；一段时间没有新日志时，会显示无新输出的时长。
+
+需要查看全部构建输出时，使用：
+
+```sh
+java-run --log=full
+```
+
+`full` 将构建命令的 stdout 和 stderr 实时合并到 java-run 的 stderr，保留原始输出字节。
+输出期间不插入定时进度，以免打断构建日志。
+构建失败时，`summary` 会补充捕获的诊断；`full` 已展示的日志不会重复打印。
+菜单和准备进度也写入 stderr，Java 应用启动后直接继承 stdin、stdout 和 stderr。
+
+`--plain` 使用无色序号菜单和追加式进度；`--no-animation` 使用追加式进度，同时保留方向键和筛选。
+stderr 重定向或终端无法重绘时也使用追加式进度；`summary` 下的长任务每十秒追加状态和最近输出。
+终端配色使用青色标示当前选择和进行中的阶段、绿色标示完成、黄色标示取消或提示、红色标示失败，始终保留对应文字。
+非空的 `NO_COLOR` 或 `FORCE_COLOR=0` 只关闭 java-run 的颜色，保留方向键和进度重绘；`--no-animation` 仍可显示颜色。
+`FORCE_COLOR` 不能覆盖 `NO_COLOR`、`--plain`、`TERM=dumb` 或 stderr 重定向的无色策略。
+颜色策略只控制 java-run 自身提示；完整构建日志和 Java 应用输出保留原样，子进程仍按自己的配置决定颜色。
+`--no-interactive` 只禁止询问，仍显示准备状态。
+这些呈现选项只作用于本次调用，不保存到 `.java-run.json`，也不改变 `plan` 的 JSON 输出。
 
 ## 参数放在哪一层
 
@@ -176,6 +206,10 @@ java-run --module :app \
 | `--include-tests` | 准备并加入测试输出和依赖，默认关闭 |
 | `--java <command>` | 显式指定应用启动使用的 Java 可执行文件 |
 | `--build-command <command>` | 显式覆盖构建工具可执行文件 |
+| `--log <summary\|full>` | `summary` 展示阶段、耗时和最近输出；`full` 实时展示构建日志 |
+| `--plain` | 使用无色序号菜单和追加式进度 |
+| `--no-animation` | 关闭动态进度，保留方向键选择和输入筛选 |
+| `--no-interactive` | 禁止询问，存在歧义时要求显式参数或项目配置 |
 | `--force` | 仅用于 `init`，忽略已有配置并重新生成 |
 
 未识别的选项、重复标量和无效值均报错。
@@ -190,7 +224,7 @@ java-run
 ```
 
 `init` 在 `--cwd` 指定的工作区根目录生成 `.java-run.json`，不启动应用。
-只有一个候选时自动采用，多个模块或入口在终端中通过数字选择；非交互环境存在歧义时，使用 `--module` / `--main` 明确指定。
+只有一个候选时自动采用，多个模块或入口使用与普通运行相同的选择菜单；非交互环境存在歧义时，使用 `--module` / `--main` 明确指定。
 
 初始化采用与运行相同的[构建准备流程](#构建与运行行为)，可能编译源码、下载依赖或更新构建工具缓存。
 Maven reactor 的自动准备会写入本地 Maven 仓库。
@@ -209,7 +243,7 @@ java-run
 - 本次显式提供的构建参数、JVM 参数和应用参数
 - 非默认的 `--build` / `--include-tests` 设置
 
-`--cwd`、`--java` 和 `--build-command` 不保存到配置。
+`--cwd`、`--java`、`--build-command` 和终端呈现选项不保存到配置。
 自定义工具路径需在调用时通过 CLI 指定；`--java` 只控制应用启动，不改变构建工具使用的 JDK。
 
 已有 `.java-run.json` 时，`init` 在运行构建工具前报错并保留原文件。

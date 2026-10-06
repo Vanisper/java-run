@@ -3,26 +3,37 @@ import { spawn } from 'node:child_process';
 import { chooseCandidate } from '../src/cli/selection';
 
 const selectionModule = new URL('../src/cli/selection.ts', import.meta.url).href;
+const policyModule = new URL('../src/terminal/policy.ts', import.meta.url).href;
 const candidates = [
   { value: ':app', label: '应用模块 app' },
   { value: ':apps:admin-server', label: '管理模块 admin-server' },
 ];
 
-async function runSelection(input: string | undefined, tty: boolean, signal?: NodeJS.Signals) {
+async function runSelection(input: string | undefined, tty: boolean, signal?: NodeJS.Signals, enhanced = false) {
   const source = `
     import { chooseCandidate } from ${JSON.stringify(selectionModule)};
+    import { resolveTerminalPolicy } from ${JSON.stringify(policyModule)};
     Object.defineProperty(process.stdin, 'isTTY', { value: ${tty} });
     Object.defineProperty(process.stderr, 'isTTY', { value: ${tty} });
-    const counts = process.listenerCount('SIGINT');
+    if (${enhanced}) {
+      Object.defineProperty(process.stdin, 'isRaw', { value: false, writable: true });
+      Object.defineProperty(process.stdin, 'setRawMode', { value: enabled => { process.stdin.isRaw = enabled; } });
+    }
+    process.stdin.pause();
+    const countSignals = () => process.listenerCount('SIGINT') + process.listenerCount('SIGTERM');
+    const countInputs = () => ['data', 'end', 'close', 'error', 'readable'].reduce((count, event) => count + process.stdin.listenerCount(event), 0);
+    const signals = countSignals();
+    const inputs = countInputs();
+    const after = () => ({ remainingSignalListeners: countSignals() - signals, remainingInputListeners: countInputs() - inputs, paused: process.stdin.isPaused() });
     try {
-      const result = await chooseCandidate(${JSON.stringify(candidates)}, '选择启动模块');
-      console.log(JSON.stringify({ value: result, remainingSignalListeners: process.listenerCount('SIGINT') - counts }));
+      const result = await chooseCandidate(${JSON.stringify(candidates)}, '选择启动模块', resolveTerminalPolicy({ plain: ${!enhanced} }));
+      console.log(JSON.stringify({ value: result, ...after() }));
     } catch (error) {
-      console.log(JSON.stringify({ error: error.message, name: error.name, remainingSignalListeners: process.listenerCount('SIGINT') - counts }));
+      console.log(JSON.stringify({ error: error.message, name: error.name, ...after() }));
       process.exitCode = error.exitCode || 1;
     }
   `;
-  const child = spawn(process.execPath, ['-e', source], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['-e', source], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CI: '', TERM: 'xterm-256color' } });
   let stdout = '';
   let stderr = '';
   let signalled = false;
@@ -65,9 +76,10 @@ describe('终端候选选择', () => {
   test('数字选择返回原始标识，菜单在 stderr 且监听得到清理', async () => {
     const result = await runSelection('2\n', true);
     expect(result.code).toBe(0);
-    expect(result.result).toEqual({ value: ':apps:admin-server', remainingSignalListeners: 0 });
+    expect(result.result).toEqual({ value: ':apps:admin-server', remainingSignalListeners: 0, remainingInputListeners: 0, paused: true });
     expect(result.stderr).toContain('1. 应用模块 app');
     expect(result.stderr).toContain('2. 管理模块 admin-server');
+    expect(result.stderr).not.toContain('\x1b');
   });
 
   test('无效输入重新提示，只有有效序号才完成', async () => {
@@ -80,7 +92,7 @@ describe('终端候选选择', () => {
   test('EOF 取消以 130 退出且不保留监听', async () => {
     const result = await runSelection('', true);
     expect(result.code).toBe(130);
-    expect(result.result).toMatchObject({ name: 'SelectionCancelledError', remainingSignalListeners: 0 });
+    expect(result.result).toMatchObject({ name: 'SelectionCancelledError', remainingSignalListeners: 0, remainingInputListeners: 0 });
   });
 
   test('终端 Ctrl+C 取消以 130 退出', async () => {
@@ -89,9 +101,22 @@ describe('终端候选选择', () => {
     expect(result.result.name).toBe('SelectionCancelledError');
   });
 
+  test('增强菜单首次渲染前发生 EOF 也能取消并释放监听', async () => {
+    const result = await runSelection('', true, undefined, true);
+    expect(result.code).toBe(130);
+    expect(result.result).toMatchObject({ name: 'SelectionCancelledError', remainingSignalListeners: 0, remainingInputListeners: 0 });
+    expect(result.stderr).not.toContain('Unhandled');
+  });
+
   test.skipIf(process.platform === 'win32')('实际 SIGINT 取消以 130 退出', async () => {
     const result = await runSelection(undefined, true, 'SIGINT');
     expect(result.code).toBe(130);
-    expect(result.result).toMatchObject({ name: 'SelectionCancelledError', remainingSignalListeners: 0 });
+    expect(result.result).toMatchObject({ name: 'SelectionCancelledError', remainingSignalListeners: 0, remainingInputListeners: 0, paused: true });
+  });
+
+  test.skipIf(process.platform === 'win32')('实际 SIGTERM 取消以 143 退出并释放终端监听', async () => {
+    const result = await runSelection(undefined, true, 'SIGTERM');
+    expect(result.code).toBe(143);
+    expect(result.result).toMatchObject({ name: 'SelectionCancelledError', remainingSignalListeners: 0, remainingInputListeners: 0, paused: true });
   });
 });

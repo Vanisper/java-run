@@ -25,6 +25,17 @@ function saveConfig(data: unknown, directory = projectDirectory): void {
 }
 
 describe('框架中立的启动参数', () => {
+  test('终端偏好独立于启动配置，严格验证值和重复选项', () => {
+    const config = parse(['--log=full', '--plain', '--no-animation', '--no-interactive']);
+    expect(config.terminal).toEqual({ logMode: 'full', plain: true, animation: false, interactive: false });
+    expect(toProjectConfig(config, 'maven', 'example.App')).toEqual({ buildTool: 'maven', mainClass: 'example.App' });
+    for (const args of [['--log=other'], ['--log'], ['--log=full', '--log=summary'],
+      ['--plain=true'], ['--plain', '--plain'], ['--no-animation=false'], ['--no-interactive', '--no-interactive']]) {
+      expect(() => parse(args)).toThrow();
+    }
+    expect(parse(['--', '--log=full', '--plain']).applicationArgs).toEqual(['--log=full', '--plain']);
+  });
+
   test('无参数默认运行，构建工具与构建策略默认自动选择', () => {
     const config = parse([]);
     expect(config.action).toBe('run');
@@ -357,11 +368,11 @@ describe('帮助与解析副作用', () => {
   });
 
   test('帮助输出由调用方决定退出时机', () => {
-    const log = spyOn(console, 'log').mockImplementation(() => {});
+    const log = spyOn(process.stdout, 'write').mockImplementation(() => true);
     const exit = spyOn(process, 'exit').mockImplementation(() => { throw new Error('不应退出'); });
     try {
       helpLog();
-      expect(log).toHaveBeenCalledWith(getHelpText());
+      expect(log).toHaveBeenCalledWith(getHelpText() + '\n');
       expect(exit).not.toHaveBeenCalled();
     } finally {
       log.mockRestore();

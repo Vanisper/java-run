@@ -3,6 +3,9 @@ import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node
 import os from 'node:os';
 import path from 'node:path';
 import { assertJavaArguments, JavaArgumentEncodingError, readJavaNativeEncoding } from '../src/process/java-arguments';
+import { createLogger } from '../src/logging/logger';
+import { createTerminalReporter, writeDiagnostic } from '../src/terminal/log-reporter';
+import { resolveTerminalPolicy } from '../src/terminal/policy';
 
 type Fixture = 'boot-single' | 'boot-reactor' | 'plain' | 'gradle-reactor';
 type Suite = 'quick' | 'full';
@@ -32,6 +35,7 @@ interface Expectations {
 
 const projectRoot = path.resolve(import.meta.dir, '..');
 const fixtureNames: Fixture[] = ['boot-single', 'boot-reactor', 'plain', 'gradle-reactor'];
+const logger = createLogger({ context: 'java-run', reporter: createTerminalReporter(resolveTerminalPolicy({})) }).withContext('smoke');
 
 function parseOptions(): SmokeOptions {
   let executable = path.join(projectRoot, 'dist', process.platform === 'win32' ? 'java-run.exe' : 'java-run');
@@ -143,7 +147,7 @@ async function main(): Promise<void> {
     }
     const specialValue = unicodeArguments ? 'hello world #中文%' : 'hello world #%';
     const configValue = unicodeArguments ? 'config value #中文%' : 'config value #%';
-    console.log(`Java native encoding: ${nativeEncoding}; Unicode argv: ${unicodeArguments ? 'supported' : 'explicit rejection required'}`);
+    logger.info(`Java native encoding: ${nativeEncoding}; Unicode argv: ${unicodeArguments ? 'supported' : 'explicit rejection required'}`);
     await writeFile(settings, '<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"/>\n');
     for (const fixture of fixtureNames) {
       const destination = path.join(workspace, `${fixture} 空格#中文%`);
@@ -158,6 +162,7 @@ async function main(): Promise<void> {
     await writeFile(path.join(plainMavenConfiguration, 'maven.config'), '-Dfixture.maven.config=project-root\n');
 
     const check = async (name: string, args: string[], expected: Expectations = {}, cwd = workspace) => {
+      const checkLogger = logger.withContext(name, { logDirectory });
       const started = Date.now();
       const result = await invoke(options.executable, args, cwd, env);
       await writeFile(path.join(logDirectory, `${name}.stdout.log`), result.stdout);
@@ -178,12 +183,13 @@ async function main(): Promise<void> {
         if ((result.stdout + result.stderr).includes(marker)) violations.push(`出现禁止标记: ${marker}`);
       }
       if (violations.length) {
-        console.error(`FAIL ${name}:\n${violations.join('\n')}`);
-        console.error(`stdout:\n${result.stdout.slice(-16_000)}\nstderr:\n${result.stderr.slice(-16_000)}`);
+        checkLogger.error(`验收失败\n${violations.join('\n')}`);
+        await logger.flush();
+        await writeDiagnostic(`stdout:\n${result.stdout.slice(-16_000)}\nstderr:\n${result.stderr.slice(-16_000)}`);
         throw new Error(`${name} 未通过；完整输出: ${logDirectory}`);
       }
       checks++;
-      console.log(`PASS ${name} (${((Date.now() - started) / 1000).toFixed(1)}s)`);
+      checkLogger.success(`通过（${((Date.now() - started) / 1000).toFixed(1)}s）`);
       return result;
     };
     const mavenBuildArguments = ['-s', settings, `-Dmaven.repo.local=${repository}`];
@@ -361,14 +367,19 @@ async function main(): Promise<void> {
       }
     }
     failed = false;
-    console.log(`已通过 ${checks} 项原生二进制 smoke (${options.suite}, ${process.platform}/${process.arch})`);
+    logger.success(`已通过 ${checks} 项原生二进制 smoke (${options.suite}, ${process.platform}/${process.arch})`);
   } finally {
-    if (failed || options.keep) console.log(`保留 smoke 临时目录: ${workspace}`);
+    if (failed || options.keep) logger.info(`保留 smoke 临时目录: ${workspace}`);
     else await rm(workspace, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
   }
 }
 
-await main().catch(error => {
-  console.error(error instanceof Error ? error.message : error);
+try {
+  await main();
+} catch (error) {
+  logger.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
-});
+} finally {
+  try { await logger.flush(); }
+  catch { process.exitCode ||= 1; }
+}

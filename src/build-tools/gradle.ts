@@ -188,13 +188,12 @@ function initializationScript(config: RunConfig, workspace: string, discovery = 
   return initScript.replace('@JAVA_RUN_REQUEST@', encoded);
 }
 
-async function executeGradle(spec: CommandSpec, config: RunConfig): Promise<void> {
+async function executeGradle(spec: CommandSpec, config: RunConfig, execute: typeof runCommand): Promise<void> {
   const java = process.env.JAVA_HOME
     ? join(process.env.JAVA_HOME, 'bin', process.platform === 'win32' ? 'java.exe' : 'java')
     : 'java';
   await assertJavaArguments(java, spec.args, spec.cwd);
-  console.error(`java-run：${spec.stage}`);
-  const result = await runCommand(spec, { capture: true });
+  const result = await execute(spec, { capture: true });
   if (result.exitCode !== 0) {
     // JDK 17 的控制台编码可能丢失中文，受控失败只跨进程传递 ASCII 错误码
     const code = /\[JAVA_RUN:(NO_PROJECT|NO_JAVA_PLUGIN|NO_CLASSES|UNSUPPORTED_JPMS)\]/
@@ -243,16 +242,18 @@ function readProject(output: string): PreparedProject {
 /**
  * 由 Gradle 任务图准备目标项目并读取已裁决的运行元数据
  *
- * @description 临时 init script 只写入 workspace，不修改项目构建脚本；构建失败保留退出码和完整输出
+ * @description
+ * - execute 执行捕获命令，命令成功且元数据校验通过后返回准备结果
+ * - 临时 init script 只写入 workspace，不修改项目构建脚本；构建失败保留退出码和完整输出
  */
-export async function prepareGradle(config: RunConfig, workspace: string): Promise<PreparedProject> {
+export async function prepareGradle(config: RunConfig, workspace: string, execute: typeof runCommand = runCommand): Promise<PreparedProject> {
   const plan = planGradle(config, workspace);
   const paths = metadataPaths(workspace);
   mkdirSync(resolve(workspace), { recursive: true });
   writeFileSync(paths.script, initializationScript(config, workspace));
   rmSync(paths.output, { force: true });
   const spec = plan.commands[0]!;
-  await executeGradle(spec, config);
+  await executeGradle(spec, config, execute);
   return readProject(paths.output);
 }
 
@@ -262,15 +263,16 @@ export async function prepareGradle(config: RunConfig, workspace: string): Promi
  * @description
  * - 执行项目配置和列表任务，构建逻辑可能需要准备 buildSrc 或 included builds
  * - 不主动编译候选应用、解析其运行依赖或读取主类 Provider；候选仍需准备后确认入口
+ * - execute 执行候选发现命令，返回的稳定标识为 Gradle 项目路径
  */
-export async function discoverGradleProjects(config: RunConfig, workspace: string): Promise<{ value: string; label: string }[]> {
+export async function discoverGradleProjects(config: RunConfig, workspace: string, execute: typeof runCommand = runCommand): Promise<{ value: string; label: string }[]> {
   const spec = commandSpecification(config, workspace, true);
   const paths = metadataPaths(workspace);
   const output = join(resolve(workspace), 'gradle-projects.json');
   mkdirSync(resolve(workspace), { recursive: true });
   writeFileSync(paths.script, initializationScript(config, workspace, true));
   rmSync(output, { force: true });
-  await executeGradle(spec, config);
+  await executeGradle(spec, config, execute);
   const candidates: unknown = JSON.parse(readFileSync(output, 'utf8'));
   if (!Array.isArray(candidates) || candidates.some(candidate =>
     !candidate || typeof candidate.value !== 'string' || !candidate.value.startsWith(':') || typeof candidate.label !== 'string')) {

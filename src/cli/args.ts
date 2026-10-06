@@ -1,10 +1,12 @@
 import { resolve } from 'node:path';
 import type { RunConfig } from '../core/types';
+import type { TerminalPreferences } from '../terminal/policy';
 import { buildStrategy, buildTool, mainClass, moduleSelector, readProjectConfig } from './config';
 
-/** CLI 解析结果，包含不写入项目配置的覆盖确认开关 */
+/** CLI 解析结果，包含不写入项目配置的终端偏好与覆盖确认开关 */
 export interface CliConfig extends RunConfig {
   force: boolean;
+  terminal: TerminalPreferences;
 }
 
 function requireValue(value: unknown, option: string): string {
@@ -26,6 +28,7 @@ export function parseArgs(argv: string[], cwd = process.cwd()): CliConfig {
   const config: CliConfig = {
     action: 'run',
     force: false,
+    terminal: {},
     cwd: resolve(cwd),
     buildTool: 'auto',
     jvmArgs: [],
@@ -125,6 +128,21 @@ export function parseArgs(argv: string[], cwd = process.cwd()): CliConfig {
         flag();
         once(key);
         config.force = true;
+        break;
+      case '--log': {
+        const mode = scalar();
+        if (mode !== 'summary' && mode !== 'full') throw new Error('--log 仅支持 summary 或 full');
+        config.terminal.logMode = mode;
+        break;
+      }
+      case '--plain':
+      case '--no-interactive':
+      case '--no-animation':
+        flag();
+        once(key);
+        if (key === '--plain') config.terminal.plain = true;
+        else if (key === '--no-interactive') config.terminal.interactive = false;
+        else config.terminal.animation = false;
         break;
       case '--java':
         config.javaCommand = scalar();

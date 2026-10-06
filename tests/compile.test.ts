@@ -3,7 +3,8 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { sha256, verifyBinaryChecksum, writeBinaryChecksum } from '../scripts/checksum';
 import { parseCompileOptions } from '../scripts/compile';
 import { version } from '../package.json';
@@ -82,7 +83,16 @@ describe('独立二进制构建', () => {
         copyFileSync(resolve(import.meta.dir, `../scripts/${name}`), join(scripts, name));
       }
       const brokenCompile = join(scripts, 'compile.ts');
-      mkdirSync(join(root, 'src'));
+      const terminal = join(root, 'src/terminal');
+      mkdirSync(terminal, { recursive: true });
+      for (const name of ['log-reporter.ts', 'style.ts', 'policy.ts']) {
+        copyFileSync(resolve(import.meta.dir, `../src/terminal/${name}`), join(terminal, name));
+      }
+      mkdirSync(join(root, 'src/logging'));
+      copyFileSync(resolve(import.meta.dir, '../src/logging/logger.ts'), join(root, 'src/logging/logger.ts'));
+      mkdirSync(join(root, 'node_modules'));
+      const consola = resolve(dirname(fileURLToPath(import.meta.resolve('consola/core'))), '..');
+      symlinkSync(consola, join(root, 'node_modules/consola'), process.platform === 'win32' ? 'junction' : 'dir');
       writeFileSync(join(root, 'src/cli.ts'), 'export const = invalid source');
       writeFileSync(executable, 'previous binary');
       writeFileSync(sidecar, 'previous checksum\n');

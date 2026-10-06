@@ -8,6 +8,7 @@ java-run 从 Java 源码工作区选择启动目标，由 Maven 或 Gradle 准�
 - 使用 [`.bun-version`](.bun-version) 指定的 Bun，并按仓库锁文件安装依赖
 - 在 PATH 中提供 JDK 的 `java`、`javac` 和 `jar`
 - 安装 Maven 和 Gradle，用于真实项目验收；首次运行可能下载插件与依赖
+- 在 Linux / macOS 上提供 Python 3，用于真实 PTY 交互验收
 
 CI 使用 JDK 17 / 21 和 Gradle 8.14，夹具以 Java 17 为最低版本。
 目标项目存在 Wrapper 时，运行器优先使用 Wrapper；项目自身的 JDK 和构建工具要求仍需满足。
@@ -123,7 +124,8 @@ Markdown 正文使用正常中文标点，同组列表保持语法与标点统�
 - 默认测试隔离和显式测试类路径
 - 正常与非零退出、平台对应的信号处理和进程树清理
 - 帮助、版本和静态预览的无构建行为
-- 终端选择、非 TTY 行为、EOF / Ctrl+C 取消和退出码
+- 方向键、筛选、滚动、纯文本降级、非 TTY 和 CI 下禁止询问
+- 阶段状态、日志模式、无色模式、窄屏、EOF / Ctrl+C / 信号取消与终端恢复
 - `init` 保存后重复运行、参数保留、已有配置保护与 `--force` 重新生成
 - 初始化失败或取消时保留已有配置
 
@@ -131,10 +133,30 @@ Markdown 正文使用正常中文标点，同组列表保持语法与标点统�
 环境和信号测试使用隔离子进程，平台专用测试的跳过条件应与实际系统能力对应。
 跨平台结论以对应系统上的执行结果为依据，跳过的测试不计为通过验收。
 
+### 真实终端验收
+
+`tests/terminal-pty.test.ts` 使用 Python 3 的 `pty` / `termios` 标准库创建真实控制终端。
+测试覆盖方向键、筛选、无匹配后的继续选择、滚动、窄屏和无色模式，以及 EOF、Ctrl+C、SIGINT / SIGTERM 后的输入模式、光标与监听恢复。
+构建活动还需验证 stdin 仍可被子进程读取、取消后进程树退出且停止重绘；完整 CLI 用例确认选择结束后真实 Java 应用能正常读取输入并回显。
+
+在 Linux / macOS 上运行源码和编译产物的验收：
+
+```sh
+bun test tests/terminal-pty.test.ts
+bun run compile
+JAVA_RUN_PTY_CLI="$PWD/dist/java-run" \
+bun test tests/terminal-pty.test.ts --test-name-pattern '编译二进制'
+```
+
+默认使用 PATH 中的 `python3`，可通过 `JAVA_RUN_TEST_PYTHON` 指定其他 Python 3 命令。
+缺少 Python 标准库或运行在 Windows 时，这组测试会注明原因并跳过；Windows ConPTY 尚未纳入验收，不能将其他平台的通过结果当作 Windows 丰富交互已经验证。
+策略与管道测试继续覆盖非交互和纯文本契约，但不能代替真实终端测试。
+
 ## CI 与发布
 
 [Check 工作流](.github/workflows/check.yaml) 在分支 push、PR 和复用调用时运行。
 Linux、macOS、Windows 与 JDK 17 / 21 组成六组矩阵，分别执行锁文件安装、类型检查、回归测试、本机编译和完整 smoke。
+Linux / macOS 另外安装 Python，运行源码 PTY 回归，并在编译后验证独立二进制的选择与 Java 输入交接。
 最新结果可在 [GitHub Actions](https://github.com/Vanisper/java-run/actions/workflows/check.yaml) 查看。
 
 [发布准备](.github/workflows/prepare-release.yaml)、[发布验收](.github/workflows/release.yaml)

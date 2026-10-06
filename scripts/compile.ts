@@ -3,6 +3,9 @@ import { rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { writeBinaryChecksum } from './checksum';
 import { platforms, type BuildTarget } from './platforms';
+import { createLogger, type Logger } from '../src/logging/logger';
+import { createTerminalReporter } from '../src/terminal/log-reporter';
+import { resolveTerminalPolicy } from '../src/terminal/policy';
 
 const projectRoot = resolve(import.meta.dir, '..');
 
@@ -40,7 +43,7 @@ export function parseCompileOptions(argv: readonly string[], cwd = projectRoot):
 }
 
 /** 编译独立二进制及校验和，构建失败保留 Bun 的退出码 */
-async function main(argv: string[]): Promise<number> {
+async function main(argv: string[], logger: Logger): Promise<number> {
   const options = parseCompileOptions(argv);
   const windows = options.target ? options.target.startsWith('bun-windows-') : process.platform === 'win32';
   const binary = windows && !options.outfile.endsWith('.exe') ? `${options.outfile}.exe` : options.outfile;
@@ -51,6 +54,7 @@ async function main(argv: string[]): Promise<number> {
     `--outfile=${options.outfile}`,
   ];
   if (options.target) args.push(`--target=${options.target}`);
+  await logger.flush();
   const result = spawnSync(process.execPath, args, { cwd: projectRoot, stdio: 'inherit' });
   if (result.error) throw result.error;
   const status = result.status ?? 1;
@@ -59,10 +63,14 @@ async function main(argv: string[]): Promise<number> {
 }
 
 if (import.meta.main) {
+  const logger = createLogger({ context: 'java-run', reporter: createTerminalReporter(resolveTerminalPolicy({})) }).withContext('compile');
   try {
-    process.exitCode = await main(Bun.argv.slice(2));
+    process.exitCode = await main(Bun.argv.slice(2), logger);
   } catch (error) {
-    console.error(`java-run：${error instanceof Error ? error.message : String(error)}`);
+    logger.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
+  } finally {
+    try { await logger.flush(); }
+    catch { process.exitCode ||= 1; }
   }
 }
