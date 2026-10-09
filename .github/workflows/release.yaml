@@ -16,6 +16,11 @@ on:
       - 'scripts/publish-release.ts'
       - 'scripts/prepare-release.ts'
       - 'scripts/smoke.ts'
+      - 'src/logging/logger.ts'
+      - 'src/terminal/layout.ts'
+      - 'src/terminal/log-reporter.ts'
+      - 'src/terminal/policy.ts'
+      - 'src/terminal/style.ts'
       - 'docs/installation.md'
       - 'LICENSE*'
       - 'tests/compile.test.ts'
@@ -55,6 +60,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version
+      - name: 按锁文件安装依赖
+        run: bun install --frozen-lockfile
       - name: 校验版本并生成产物清单
         id: metadata
         run: bun scripts/release.ts metadata ${{ inputs.publish && '--publish' || '' }}
@@ -152,6 +159,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version
+      - name: 按锁文件安装依赖
+        run: bun install --frozen-lockfile
       - name: 汇总构建产物
         uses: actions/download-artifact@v7
         with:
@@ -193,6 +202,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version
+      - name: 按锁文件安装依赖
+        run: bun install --frozen-lockfile
       - uses: actions/download-artifact@v7
         with:
           name: release-with-checksums

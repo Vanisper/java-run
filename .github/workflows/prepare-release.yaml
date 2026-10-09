@@ -36,6 +36,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version
+      - name: 按锁文件安装依赖
+        run: bun install --frozen-lockfile
       - name: 创建或恢复发布准备 PR
         id: prepare
         env:
