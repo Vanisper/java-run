@@ -18,7 +18,15 @@ export function createCliPresentation(
   const stagePrefix = tool === 'maven' ? 'Maven ' : tool === 'gradle' ? 'Gradle ' : undefined;
   const interruptedApplication = (error: unknown) => error instanceof CommandError && (error.signal === 'SIGINT' || error.signal === 'SIGTERM');
 
-  async function report(error: unknown, feedback: ActivityFeedback, application = false): Promise<void> {
+  async function writeDiagnostics(result: Pick<CommandResult, 'stdout' | 'stderr'>, feedback: ActivityFeedback): Promise<void> {
+    if (result.stdout) await feedback.output({ stream: 'stdout', data: Buffer.from(result.stdout) }, 'full');
+    if (result.stderr) await feedback.output({ stream: 'stderr', data: Buffer.from(result.stderr) }, 'full');
+  }
+
+  async function report(error: unknown, feedback: ActivityFeedback, application = false, diagnostics?: {
+    results: readonly CommandResult[];
+    truncated: boolean;
+  }): Promise<void> {
     const exitCode = error && typeof error === 'object' && 'exitCode' in error ? error.exitCode : undefined;
     const cancelled = application ? interruptedApplication(error) : exitCode === 130 || exitCode === 143;
     if (!cancelled) {
@@ -28,13 +36,14 @@ export function createCliPresentation(
           await feedback.detail('工作目录', error.cwd);
         }
         if (!displayed.has(error)) {
-          if (error.stdout) await feedback.output({ stream: 'stdout', data: Buffer.from(error.stdout) }, 'full');
-          if (error.stderr) await feedback.output({ stream: 'stderr', data: Buffer.from(error.stderr) }, 'full');
+          await writeDiagnostics(error, feedback);
           displayed.add(error);
         }
         if (error.cause instanceof Error) await feedback.log('error', error.cause.message);
       } else {
         await feedback.log('error', error instanceof Error ? error.message : String(error));
+        if (diagnostics?.truncated) await feedback.log('warn', '较早的构建输出超出诊断保留上限，仅显示最近命令的输出');
+        for (const result of diagnostics?.results ?? []) await writeDiagnostics(result, feedback);
       }
     }
     if (error && typeof error === 'object') reported.add(error);
@@ -45,6 +54,8 @@ export function createCliPresentation(
     async run<T>(label: string, work: (execute: typeof runCommand, feedback: ActivityFeedback) => Promise<T>): Promise<T> {
       await logger?.flush();
       let previous: { spec: CommandSpec; result: CommandResult } | undefined;
+      const diagnostics = { results: [] as CommandResult[], truncated: false };
+      let diagnosticLength = 0;
       return activity(label, async feedback => {
         try {
           return await work(async (spec, options) => {
@@ -55,6 +66,16 @@ export function createCliPresentation(
                 try { await feedback.output(chunk); } catch (error) { outputFailed = true; throw error; }
               } });
               previous = { spec, result };
+              if (policy.logMode === 'summary' && result.exitCode === 0 && (result.stdout || result.stderr)) {
+                diagnostics.results.push(result);
+                diagnosticLength += result.stdout.length + result.stderr.length;
+                // 按完整命令淘汰旧诊断，最新命令仍保留执行器限额内的完整结果
+                while (diagnosticLength > 16 * 1024 * 1024 && diagnostics.results.length > 1) {
+                  const removed = diagnostics.results.shift()!;
+                  diagnosticLength -= removed.stdout.length + removed.stderr.length;
+                  diagnostics.truncated = true;
+                }
+              }
               return result;
             } catch (error) {
               if (error instanceof CommandError && policy.logMode === 'full' && !outputFailed) displayed.add(error);
@@ -69,11 +90,12 @@ export function createCliPresentation(
         }
       }, policy, process.stderr, {
         context: logger?.context, layout,
-        onFailure: (error, feedback) => report(error, feedback),
+        onFailure: (error, feedback) => report(error, feedback, false, diagnostics),
       });
     },
     /** 应用输出实时转发；纯文本和重定向场景保留原始标准流 */
     async launch(spec: CommandSpec & { mainClass: string }): Promise<number> {
+      logger?.info('启动应用', { event: 'application.start', mainClass: spec.mainClass, command: spec.command, cwd: spec.cwd });
       await logger?.flush();
       const framed = policy.rewrite && process.stdout.isTTY && process.stderr.isTTY;
       return activity('启动应用', async feedback => {

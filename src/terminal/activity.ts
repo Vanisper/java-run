@@ -83,20 +83,31 @@ export async function activity<T>(
   let expansion: Promise<void> | undefined;
   let expandTimer: ReturnType<typeof setTimeout> | undefined;
   let suspended = 0;
-  const pending = new Set<Promise<void>>();
-  const onError = (error: Error) => { writeError ??= error; };
+  const pending = new Map<Promise<void>, (error: Error) => void>();
+  const onError = (error: Error) => {
+    writeError ??= error;
+    for (const reject of pending.values()) reject(writeError);
+  };
+  const onClose = () => onError(output.errored ?? new Error('终端输出流已关闭'));
   output.on('error', onError);
+  output.on('close', onClose);
 
   function write(value: string | Buffer): Promise<void> {
+    if (output.destroyed) onClose();
     if (writeError) return Promise.reject(writeError);
+    let complete!: () => void;
+    let fail!: (error: Error) => void;
     const promise = new Promise<void>((resolve, reject) => {
-      output.write(value, error => error ? reject(error) : resolve());
+      complete = resolve;
+      fail = reject;
     });
-    pending.add(promise);
-    void promise.then(() => pending.delete(promise), error => {
-      pending.delete(promise);
-      onError(error);
-    });
+    pending.set(promise, fail);
+    void promise.then(() => pending.delete(promise), () => pending.delete(promise));
+    try {
+      output.write(value, error => error ? onError(error) : complete());
+    } catch (error) {
+      onError(error instanceof Error ? error : new Error(String(error)));
+    }
     return promise;
   }
 
@@ -125,7 +136,7 @@ export async function activity<T>(
 
   async function boundary(): Promise<void> {
     await expand();
-    await Promise.allSettled(pending);
+    await Promise.allSettled(pending.keys());
     const separator = clear() + (lastByte !== 10 ? '\n' : '');
     if (separator) await write(separator);
     lastByte = 10;
@@ -245,7 +256,7 @@ export async function activity<T>(
         suspended++;
         try {
           await expand();
-          await Promise.allSettled(pending);
+          await Promise.allSettled(pending.keys());
           const previous = clear();
           if (previous) await write(previous);
           await write(prefixOutput.push(data));
@@ -289,7 +300,7 @@ export async function activity<T>(
     if (timer) clearInterval(timer);
     if (expandTimer) clearTimeout(expandTimer);
     output.removeListener('resize', render);
-    await Promise.allSettled(pending);
+    await Promise.allSettled(pending.keys());
     const exitCode = failure && typeof failure === 'object' && 'exitCode' in failure ? failure.exitCode : undefined;
     const cancelled = failed && (options.isCancelled?.(failure) ?? (exitCode === 130 || exitCode === 143));
     const type = cancelled ? 'warn' : failed ? 'error' : 'success';
@@ -306,7 +317,10 @@ export async function activity<T>(
     } catch (error) {
       onError(error instanceof Error ? error : new Error(String(error)));
     } finally {
+      // 写入回调可能先于 error 事件结束，等本轮事件排空后再释放监听
+      if (writeError) await new Promise<void>(resolve => setTimeout(resolve, 0));
       output.removeListener('error', onError);
+      output.removeListener('close', onClose);
       activeOutputs.delete(output);
     }
     if (!failed && writeError) throw writeError;

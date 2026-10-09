@@ -28,7 +28,12 @@ export async function main(argv: string[]): Promise<number> {
     const config = parseArgs(argv);
     const policy = resolveTerminalPolicy(config.terminal);
     const layout = createTerminalLayout(policy);
-    logger = createLogger({ context: 'java-run', reporter: createTerminalReporter(policy, process.stderr, layout) })
+    const terminalReporter = createTerminalReporter(policy, process.stderr, layout);
+    logger = createLogger({ context: 'java-run', reporter: {
+      // 启动事件由活动分组呈现，避免额外打印一条顶层启动提示
+      log(record) { if (record.fields.event !== 'application.start') return terminalReporter.log(record); },
+      flush: () => terminalReporter.flush?.(),
+    } })
       .withContext(config.action, { cwd: config.cwd });
     if (config.action === 'help') { helpLog(); return 0; }
     if (config.action === 'version') { process.stdout.write(`java-run ${version}\n`); return 0; }

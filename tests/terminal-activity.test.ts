@@ -21,6 +21,15 @@ const plain: TerminalPolicy = { input: 'none', rewrite: false, color: false, ani
 const rich: TerminalPolicy = { ...plain, rewrite: true, animation: true };
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+async function settledActivity<T>(work: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('输出流关闭后活动仍未结束')), 500);
+  });
+  try { return await Promise.race([work, timeout]); }
+  finally { clearTimeout(timer!); }
+}
+
 function recordStatus() {
   const types: LogType[] = [];
   const layout: TerminalLayout = {
@@ -229,6 +238,55 @@ describe('终端活动生命周期', () => {
     }, rich, broken)).rejects.toBe(cancellation);
     expect(broken.listenerCount('error')).toBe(0);
   });
+
+  test('写入中异步销毁输出流时结束活动并释放监听与活动锁', async () => {
+    const failure = new Error('输出连接已关闭');
+    const output = new Writable({
+      write() { setTimeout(() => this.destroy(failure), 0); },
+    });
+    await expect(settledActivity(activity('准备', async () => 42, rich, output))).rejects.toBe(failure);
+    expect(output.listenerCount('error')).toBe(0);
+    expect(output.listenerCount('close')).toBe(0);
+    expect(output.listenerCount('resize')).toBe(0);
+    await expect(settledActivity(activity('再次使用', async () => 42, rich, output))).rejects.toBe(failure);
+  }, 1000);
+
+  test('无错误销毁输出流也结束等待，并保留调用方监听', async () => {
+    const output = new Writable({
+      write() { setTimeout(() => this.destroy(), 0); },
+    });
+    const listener = () => {};
+    for (const event of ['error', 'close', 'resize']) output.on(event, listener);
+    await expect(settledActivity(activity('准备', async feedback => {
+      await feedback.detail('项目', 'app');
+    }, rich, output))).rejects.toThrow('终端输出流已关闭');
+    for (const event of ['error', 'close', 'resize']) expect(output.listeners(event)).toEqual([listener]);
+    await expect(settledActivity(activity('再次使用', async () => 42, rich, output))).rejects.toThrow('终端输出流已关闭');
+    for (const event of ['error', 'close', 'resize']) output.removeListener(event, listener);
+  }, 1000);
+
+  test('写入回调异步失败时保留错误，并在延迟 error 事件后释放监听', async () => {
+    const failure = new Error('写入失败');
+    const output = new Writable({
+      write(_chunk, _encoding, callback) { setTimeout(() => callback(failure), 0); },
+    });
+    await expect(settledActivity(activity('准备', async () => 42, rich, output))).rejects.toBe(failure);
+    for (const event of ['error', 'close', 'resize']) expect(output.listenerCount(event)).toBe(0);
+    await expect(settledActivity(activity('再次使用', async () => 42, rich, output))).rejects.toBe(failure);
+  }, 1000);
+
+  for (const withError of [false, true]) test(`诊断期间销毁输出流保留工作异常（${withError ? '有错误' : '无错误'}）`, async () => {
+    const failure = new Error('项目准备失败');
+    const outputFailure = withError ? new Error('诊断输出已关闭') : undefined;
+    const output = new Writable({
+      write() { setTimeout(() => this.destroy(outputFailure), 0); },
+    });
+    await expect(settledActivity(activity('准备', async () => { throw failure; }, rich, output, {
+      onFailure: (_error, feedback) => feedback.log('error', '诊断'),
+    }))).rejects.toBe(failure);
+    for (const event of ['error', 'close', 'resize']) expect(output.listenerCount(event)).toBe(0);
+    await expect(settledActivity(activity('再次使用', async () => { throw failure; }, rich, output))).rejects.toBe(failure);
+  }, 1000);
 
   test('同一输出不允许嵌套活动，结束后可以再次使用', async () => {
     const output = new TerminalOutput();

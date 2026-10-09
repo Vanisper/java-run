@@ -284,6 +284,7 @@ describe.skipIf(Boolean(terminalPtyUnavailable))(`真实 PTY 交互${terminalPty
       timeoutMs: 20000,
     });
     expect(terminal.exitCode).toBe(0);
+    expect(terminal.transcript.match(/启动应用/g)).toHaveLength(1);
     expectColorResetBefore(terminal.transcript, 'JAVA_READY');
     expect(terminal.transcript).toContain('terminal-input\r\n');
     expectRestored(terminal);
